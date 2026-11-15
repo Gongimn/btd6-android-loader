@@ -16,7 +16,13 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 8.0.428
+
+      - name: Pin SDK 8 for the installer
+        run: |
+          cd ins
+          printf '{ "sdk": { "version": "8.0.428", "rollForward": "latestFeature" } }' > global.json
+          dotnet --version
 
       - name: Make installer use local melon data
         run: |
@@ -57,7 +63,8 @@ jobs:
             -p:AndroidSigningKeyAlias=melon \
             -p:AndroidSigningKeyPass=mlpatch \
             -p:AndroidSigningStorePass=mlpatch \
-            -p:AndroidPackageFormat=apk 2>&1 | tail -40
+            -p:AndroidPackageFormat=apk \
+            -p:CheckEolTargetFramework=false 2>&1 | tail -40
 
       - name: Upload patcher
         if: always()

@@ -62,26 +62,27 @@ jobs:
           set -o pipefail
           cd ll
           dotnet build MelonLoader.NativeHost/MelonLoader.NativeHost.csproj -c Release -p:SolutionDir="$PWD/" -v m 2>&1 \
-            | grep -E "error|Build succeeded|Build FAILED" | head -60
+            | tee /tmp/build-ml.log | grep -E "error|Build succeeded|Build FAILED" || { tail -60 /tmp/build-ml.log; exit 1; }
 
-      - name: Build Il2CppAssemblyGenerator
+      # Cpp2IL/Il2CppInterop master now targets net10 while we are pinned to SDK 8.
+      # Not needed to boot the loader: melon_data.zip keeps the stock generator.
+      - name: Build Il2CppAssemblyGenerator (optional)
+        continue-on-error: true
         run: |
-          set -o pipefail
           cd ll
           dotnet build Dependencies/Il2CppAssemblyGenerator/Il2CppAssemblyGenerator.csproj -c Release \
             -p:SolutionDir="$PWD/" \
             -p:OutputPath="$PWD/Output/Release/MelonLoader/Dependencies/Il2CppAssemblyGenerator/" \
-            -v m 2>&1 | grep -E "error|Build succeeded|Build FAILED" | head -60
+            -v m 2>&1 | tee /tmp/build-gen.log | grep -E "error|Build succeeded|Build FAILED" || tail -40 /tmp/build-gen.log
 
-      - name: Build Il2Cpp support module
+      - name: Build Il2Cpp support module (optional)
         continue-on-error: true
         run: |
-          set -o pipefail
           cd ll
           dotnet build Dependencies/SupportModules/Il2Cpp/Il2Cpp.csproj -c Release \
             -p:SolutionDir="$PWD/" \
             -p:OutputPath="$PWD/Output/Release/MelonLoader/Dependencies/SupportModules/" \
-            -v m 2>&1 | grep -E "error|Build succeeded|Build FAILED" | head -60
+            -v m 2>&1 | tee /tmp/build-sup.log | grep -E "error|Build succeeded|Build FAILED" || tail -40 /tmp/build-sup.log
 
       - name: Show output
         if: always()
@@ -97,7 +98,10 @@ jobs:
           mkdir -p pack
           unzip -q /tmp/melon_data_stock.zip -d pack
           rm -rf pack/MelonLoader/net8 pack/MelonLoader/net35
-          cp -r ll/Output/Release/MelonLoader/. pack/MelonLoader/
+          cp -r ll/Output/Release/MelonLoader/net8 pack/MelonLoader/net8
+          if [ -d ll/Output/Release/MelonLoader/net35 ]; then
+            cp -r ll/Output/Release/MelonLoader/net35 pack/MelonLoader/net35
+          fi
           cd pack
           rm -f /tmp/melon_data.zip
           zip -qr /tmp/melon_data.zip *

@@ -68,8 +68,19 @@ jobs:
       - name: Build Il2CppAssemblyGenerator
         run: |
           cd ll
-          dotnet build Dependencies/Il2CppAssemblyGenerator/Il2CppAssemblyGenerator.csproj -c Release -p:SolutionDir="$PWD/" -v m 2>&1 \
-            | grep -E "error|Build succeeded|Build FAILED" | head -60
+          dotnet build Dependencies/Il2CppAssemblyGenerator/Il2CppAssemblyGenerator.csproj -c Release \
+            -p:SolutionDir="$PWD/" \
+            -p:OutputPath="$PWD/Output/Release/MelonLoader/Dependencies/Il2CppAssemblyGenerator/" \
+            -v m 2>&1 | grep -E "error|Build succeeded|Build FAILED" | head -60
+
+      - name: Build Il2Cpp support module
+        continue-on-error: true
+        run: |
+          cd ll
+          dotnet build Dependencies/SupportModules/Il2Cpp/Il2Cpp.csproj -c Release \
+            -p:SolutionDir="$PWD/" \
+            -p:OutputPath="$PWD/Output/Release/MelonLoader/Dependencies/SupportModules/" \
+            -v m 2>&1 | grep -E "error|Build succeeded|Build FAILED" | head -60
 
       - name: Show output
         if: always()

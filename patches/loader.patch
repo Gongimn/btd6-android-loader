@@ -1,5 +1,5 @@
 diff --git a/MelonLoader/Core.cs b/MelonLoader/Core.cs
-index 1a84b47..b6dfccc 100644
+index 1a84b47..d48f2e0 100644
 --- a/MelonLoader/Core.cs
 +++ b/MelonLoader/Core.cs
 @@ -44,6 +44,7 @@ namespace MelonLoader
@@ -60,13 +60,15 @@ index 1a84b47..b6dfccc 100644
  
              return 0;
          }
-@@ -144,7 +154,9 @@ namespace MelonLoader
+@@ -144,7 +154,11 @@ namespace MelonLoader
          {
  #if NET6_0_OR_GREATER
              if (_success)
-+            MelonLogger.MsgDirect("[trace] Il2CppAssemblyGenerator.Run begin"); MelonLogger.Flush();
++            {
++                MelonLogger.MsgDirect("[trace] Il2CppAssemblyGenerator.Run begin"); MelonLogger.Flush();
                  _success = Il2CppAssemblyGenerator.Run();
-+            MelonLogger.MsgDirect("[trace] Il2CppAssemblyGenerator.Run done"); MelonLogger.Flush();
++                MelonLogger.MsgDirect("[trace] Il2CppAssemblyGenerator.Run done"); MelonLogger.Flush();
++            }
  #endif
  
              return _success ? 0 : 1;
@@ -92,16 +94,30 @@ index ea58d70..8c53a83 100644
                  return false;
  
 diff --git a/MelonLoader/InternalUtils/UnityInformationHandler.cs b/MelonLoader/InternalUtils/UnityInformationHandler.cs
-index 27bf56e..d250809 100644
+index 27bf56e..ca04ea6 100644
 --- a/MelonLoader/InternalUtils/UnityInformationHandler.cs
 +++ b/MelonLoader/InternalUtils/UnityInformationHandler.cs
-@@ -40,18 +40,24 @@ namespace MelonLoader.InternalUtils
+@@ -40,18 +40,38 @@ namespace MelonLoader.InternalUtils
  
          internal static void Setup()
          {
 +            MelonLogger.MsgDirect("[trace] unity info begin"); MelonLogger.Flush();
              string gameDataPath = MelonEnvironment.UnityGameDataDirectory;
  
++            if (File.Exists(Path.Combine(MelonEnvironment.MelonBaseDirectory, "skip_unityinfo")))
++            {
++                MelonLogger.MsgDirect("[trace] skip_unityinfo set - skipping unity info"); MelonLogger.Flush();
++                if (EngineVersion == UnityVersion.MinVersion
++                    && !string.IsNullOrEmpty(MelonLaunchOptions.Core.UnityVersion))
++                    EngineVersion = TryParse(MelonLaunchOptions.Core.UnityVersion);
++                GameDeveloper = DefaultInfo;
++                GameName = DefaultInfo;
++                GameVersion = DefaultInfo;
++                MelonLogger.Msg($"Game Name: {GameName}");
++                MelonLogger.Msg($"Unity Version: {EngineVersion}");
++                return;
++            }
++
              if (!string.IsNullOrEmpty(MelonLaunchOptions.Core.UnityVersion))
                  EngineVersion = TryParse(MelonLaunchOptions.Core.UnityVersion);
  
@@ -112,15 +128,15 @@ index 27bf56e..d250809 100644
              assetsManager.UnloadAll();
 +            MelonLogger.MsgDirect("[trace] assets unloaded"); MelonLogger.Flush();
  
++            MelonLogger.MsgDirect("[trace] ReadGameInfoFallback begin"); MelonLogger.Flush();
              if (string.IsNullOrEmpty(GameDeveloper)
                  || string.IsNullOrEmpty(GameName))
-+            MelonLogger.MsgDirect("[trace] ReadGameInfoFallback begin"); MelonLogger.Flush();
                  ReadGameInfoFallback();
 +            MelonLogger.MsgDirect("[trace] ReadGameInfoFallback done"); MelonLogger.Flush();
  
              if (EngineVersion == UnityVersion.MinVersion)
                  EngineVersion = ReadVersionFallback(gameDataPath);
-@@ -64,6 +70,7 @@ namespace MelonLoader.InternalUtils
+@@ -64,6 +84,7 @@ namespace MelonLoader.InternalUtils
                  GameVersion = DefaultInfo;
  
              MelonLogger.WriteLine(Color.Magenta);
@@ -128,6 +144,82 @@ index 27bf56e..d250809 100644
              MelonLogger.Msg($"Game Name: {GameName}");
              MelonLogger.Msg($"Game Developer: {GameDeveloper}");
              MelonLogger.Msg($"Unity Version: {EngineVersion}");
+@@ -77,37 +98,64 @@ namespace MelonLoader.InternalUtils
+             AssetsFileInstance instance = null;
+             try
+             {
++                MelonLogger.MsgDirect($"[trace] RGI dataPath='{gameDataPath}'"); MelonLogger.Flush();
+                 string bundlePath = Path.Combine(gameDataPath, "globalgamemanagers");
+-                if (!APKAssetManager.DoesAssetExist(bundlePath))
++                bool exists = APKAssetManager.DoesAssetExist(bundlePath);
++                MelonLogger.MsgDirect($"[trace] RGI ggm={exists}"); MelonLogger.Flush();
++
++                if (!exists)
++                {
+                     bundlePath = Path.Combine(gameDataPath, "mainData");
++                    exists = APKAssetManager.DoesAssetExist(bundlePath);
++                    MelonLogger.MsgDirect($"[trace] RGI mainData={exists}"); MelonLogger.Flush();
++                }
+ 
+-                if (!APKAssetManager.DoesAssetExist(bundlePath))
++                if (!exists)
+                 {
+                     bundlePath = Path.Combine(gameDataPath, "data.unity3d");
+-                    if (!APKAssetManager.DoesAssetExist(bundlePath))
++                    exists = APKAssetManager.DoesAssetExist(bundlePath);
++                    MelonLogger.MsgDirect($"[trace] RGI u3d={exists}"); MelonLogger.Flush();
++                    if (!exists)
+                         return;
+ 
++                    MelonLogger.MsgDirect("[trace] RGI open bundle"); MelonLogger.Flush();
+                     Stream bundleStream = APKAssetManager.GetAssetStream(bundlePath);
++                    MelonLogger.MsgDirect("[trace] RGI bundle stream ok"); MelonLogger.Flush();
+                     BundleFileInstance bundleFile = assetsManager.LoadBundleFile(bundleStream, bundlePath);
++                    MelonLogger.MsgDirect("[trace] RGI bundle loaded"); MelonLogger.Flush();
+                     instance = assetsManager.LoadAssetsFileFromBundle(bundleFile, "globalgamemanagers");
++                    MelonLogger.MsgDirect("[trace] RGI assets from bundle ok"); MelonLogger.Flush();
+                 }
+                 else
+                 {
++                    MelonLogger.MsgDirect($"[trace] RGI open '{bundlePath}'"); MelonLogger.Flush();
+                     Stream bundleStream = APKAssetManager.GetAssetStream(bundlePath);
++                    MelonLogger.MsgDirect("[trace] RGI stream ok"); MelonLogger.Flush();
+                     instance = assetsManager.LoadAssetsFile(bundleStream, bundlePath, true);
++                    MelonLogger.MsgDirect("[trace] RGI assets loaded"); MelonLogger.Flush();
+                 }
+ 
+                 if (instance == null)
++                {
++                    MelonLogger.MsgDirect("[trace] RGI instance is null"); MelonLogger.Flush();
+                     return;
++                }
+ 
++                MelonLogger.MsgDirect($"[trace] RGI ver='{instance.file.Metadata.UnityVersion}' tt={instance.file.Metadata.TypeTreeEnabled}"); MelonLogger.Flush();
+                 assetsManager.LoadIncludedClassPackage();
++                MelonLogger.MsgDirect("[trace] RGI class package ok"); MelonLogger.Flush();
+                 if (!instance.file.Metadata.TypeTreeEnabled)
++                {
+                     assetsManager.LoadClassDatabaseFromPackage(instance.file.Metadata.UnityVersion);
++                    MelonLogger.MsgDirect("[trace] RGI class db ok"); MelonLogger.Flush();
++                }
+ 
+                 if (EngineVersion == UnityVersion.MinVersion)
+                     EngineVersion = TryParse(instance.file.Metadata.UnityVersion);
+ 
++                MelonLogger.MsgDirect("[trace] RGI PlayerSettings begin"); MelonLogger.Flush();
+                 List<AssetFileInfo> assetFiles = instance.file.GetAssetsOfType(AssetClassID.PlayerSettings);
++                MelonLogger.MsgDirect($"[trace] RGI PlayerSettings count={assetFiles.Count}"); MelonLogger.Flush();
+                 if (assetFiles.Count > 0)
+                 {
+                     AssetFileInfo playerSettings = assetFiles.First();
+@@ -131,6 +179,7 @@ namespace MelonLoader.InternalUtils
+             }
+             catch (Exception ex)
+             {
++                MelonLogger.MsgDirect($"[trace] RGI EXCEPTION {ex.GetType().Name}: {ex.Message}"); MelonLogger.Flush();
+                 if (MelonDebug.IsEnabled())
+                     MelonLogger.Error(ex);
+             }
 diff --git a/MelonLoader/MelonLoader.csproj b/MelonLoader/MelonLoader.csproj
 index 239a7c6..92b620a 100644
 --- a/MelonLoader/MelonLoader.csproj
@@ -163,3 +255,52 @@ index 5b43368..40e5e14 100644
  
              CurrentGameAttribute = new MelonGameAttribute(UnityInformationHandler.GameDeveloper, UnityInformationHandler.GameName);
              CurrentPlatform = MelonPlatformAttribute.CompatiblePlatforms.ANDROID;
+diff --git a/MelonLoader/Utils/APKAssetManager.cs b/MelonLoader/Utils/APKAssetManager.cs
+index 70003fb..e8bb02b 100644
+--- a/MelonLoader/Utils/APKAssetManager.cs
++++ b/MelonLoader/Utils/APKAssetManager.cs
+@@ -79,13 +79,18 @@ public static class APKAssetManager
+ 
+     public static Stream GetAssetStream(string path)
+     {
++        MelonLogger.MsgDirect($"[trace] asset open '{path}'"); MelonLogger.Flush();
+         using JString pathString = JNI.NewString(path);
+         JObject asset = JNI.CallObjectMethod<JObject>(assetManager, JNI.GetMethodID(JNI.GetObjectClass(assetManager), "open", "(Ljava/lang/String;)Ljava/io/InputStream;"), new JValue(pathString));
+         if (asset == null || !asset.Valid())
++        {
++            MelonLogger.MsgDirect($"[trace] asset open FAILED '{path}'"); MelonLogger.Flush();
+             return null;
++        }
+ 
+         HandleException();
+ 
++        MelonLogger.MsgDirect($"[trace] asset open ok '{path}'"); MelonLogger.Flush();
+         return new APKAssetStream(asset);
+     }
+ 
+@@ -104,9 +109,17 @@ public static class APKAssetManager
+     {
+         // using `list` isn't as fast as just calling open, but this allows the function to not crash on debuggable builds of apps
+         string containingDir = path[..path.LastIndexOf('/')];
++        MelonLogger.MsgDirect($"[trace] asset? list '{containingDir}'"); MelonLogger.Flush();
+         JString pathString = JNI.NewString(containingDir);
+         JObjectArray<JString> assets = JNI.CallObjectMethod<JObjectArray<JString>>(assetManager, JNI.GetMethodID(JNI.GetObjectClass(assetManager), "list", "(Ljava/lang/String;)[Ljava/lang/String;"), new JValue(pathString));
+ 
++        if (assets == null)
++        {
++            HandleException();
++            MelonLogger.MsgDirect($"[trace] asset? list is null for '{containingDir}'"); MelonLogger.Flush();
++            return false;
++        }
++
+         bool exists = assets.Any(js =>
+         {
+             string asset = JNI.GetJStringString(js);
+@@ -114,6 +127,7 @@ public static class APKAssetManager
+         });
+ 
+         HandleException();
++        MelonLogger.MsgDirect($"[trace] asset? '{path}' -> {exists}"); MelonLogger.Flush();
+ 
+         return exists;
+     }

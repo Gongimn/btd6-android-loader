@@ -25,27 +25,26 @@ jobs:
       - name: Fetch external projects
         run: |
           cd ll/External
-          for r in JNISharp HarmonyX Il2CppInterop; do
+          for r in JNISharp HarmonyX Il2CppInterop Cpp2IL; do
             if [ ! -d "$r" ] || [ -z "$(ls -A "$r" 2>/dev/null)" ]; then
-              git clone --depth 1 --recursive https://github.com/LemonLoader/$r.git "$r" || true
+              git clone --depth 1 --recursive https://github.com/LemonLoader/$r.git "$r" 2>/dev/null \
+                || git clone --depth 1 --recursive https://github.com/SamboyCoding/$r.git "$r" || true
             fi
           done
           ls -la
 
-      - name: Inspect MonoMod
+      - name: Bump AsmResolver to match newer Il2CppInterop
         run: |
-          ls -la ll/External/MonoMod | head -30
-          find ll/External/MonoMod -maxdepth 2 -name "*.sln" -o -maxdepth 2 -name "*.csproj" | head -20
+          sed -i 's/AsmResolver.DotNet" Version="6.0.0-beta.2"/AsmResolver.DotNet" Version="6.0.0-beta.5"/' ll/MelonLoader/MelonLoader.csproj
+          grep -n AsmResolver ll/MelonLoader/MelonLoader.csproj | head
 
-      - name: Try MonoMod build
-        continue-on-error: true
+      - name: Build MonoMod
         run: |
           cd ll/External/MonoMod
-          ls
-          dotnet build -c Release -v m 2>&1 | tail -40
+          dotnet build -c Release -v q 2>&1 | tail -15
 
-      - name: Try main build
+      - name: Build MelonLoader net8
         continue-on-error: true
         run: |
           cd ll
-          dotnet build MelonLoader/MelonLoader.csproj -c Release -f net8.0 -v m 2>&1 | tail -40
+          dotnet build MelonLoader/MelonLoader.csproj -c Release -f net8.0 -v m 2>&1 | grep -E "error|Build succeeded|Build FAILED" | head -40

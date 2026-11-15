@@ -9,6 +9,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout our repo
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
       - name: Checkout loader sources
         uses: actions/checkout@v4
         with:
@@ -42,34 +47,40 @@ jobs:
           JSON
           dotnet --version
 
-      - name: Port to newer dependencies
+      - name: Apply our patches
         run: |
-          # AsmResolver 6.0.0-beta.5 (needed by current Il2CppInterop)
-          sed -i 's/AsmResolver.DotNet" Version="6.0.0-beta.2"/AsmResolver.DotNet" Version="6.0.0-beta.5"/' ll/MelonLoader/MelonLoader.csproj
-          # TypeDefinition.Module was renamed to DeclaringModule
-          sed -i 's/__0\.Module/__0.DeclaringModule/g' ll/MelonLoader/Fixes/Il2CppInteropFixes.cs
-          grep -n "DeclaringModule" ll/MelonLoader/Fixes/Il2CppInteropFixes.cs
+          cd ll
+          git apply --verbose ../repo/patches/loader.patch || patch -p1 --fuzz=3 < ../repo/patches/loader.patch
+          grep -c "\[trace\]" MelonLoader/Core.cs MelonLoader/MelonUtils.cs MelonLoader/InternalUtils/UnityInformationHandler.cs
+          grep -n "DeclaringModule" MelonLoader/Fixes/Il2CppInteropFixes.cs
 
       - name: Build MonoMod
         run: |
           cd ll/External/MonoMod
           dotnet build -c Release -v q 2>&1 | tail -10
 
-      - name: Build MelonLoader net8
+      - name: Build MelonLoader + NativeHost
         run: |
           cd ll
-          dotnet build MelonLoader/MelonLoader.csproj -c Release -f net8 -v m 2>&1 | grep -E "error|Build succeeded|Build FAILED" | head -60
+          dotnet build MelonLoader.NativeHost/MelonLoader.NativeHost.csproj -c Release -p:SolutionDir="$PWD/" -v m 2>&1 \
+            | grep -E "error|Build succeeded|Build FAILED" | head -60
+
+      - name: Build Il2CppAssemblyGenerator
+        run: |
+          cd ll
+          dotnet build Dependencies/Il2CppAssemblyGenerator/Il2CppAssemblyGenerator.csproj -c Release -p:SolutionDir="$PWD/" -v m 2>&1 \
+            | grep -E "error|Build succeeded|Build FAILED" | head -60
 
       - name: Show output
         if: always()
         run: |
-          find ll/Output -maxdepth 4 -type d 2>/dev/null | head -20
-          ls -la ll/Output/Release/MelonLoader/net8 2>/dev/null | head -20
+          find ll/Output -maxdepth 5 -type d 2>/dev/null | head -40
+          ls -la ll/Output/Release/MelonLoader/net8 2>/dev/null | head -30
 
-      - name: Upload net8 folder
+      - name: Upload build output
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: melonloader-net8
-          path: ll/Output/Release/MelonLoader/net8/
+          name: melonloader-build
+          path: ll/Output/Release/MelonLoader/
           if-no-files-found: warn

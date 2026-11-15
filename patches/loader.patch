@@ -1,0 +1,165 @@
+diff --git a/MelonLoader/Core.cs b/MelonLoader/Core.cs
+index 1a84b47..b6dfccc 100644
+--- a/MelonLoader/Core.cs
++++ b/MelonLoader/Core.cs
+@@ -44,6 +44,7 @@ namespace MelonLoader
+             MelonLogger.Msg("Initialized JNI");
+ 
+             APKAssetManager.CopyAdditionalData();
++            MelonLogger.MsgDirect("[trace] apk data copied"); MelonLogger.Flush();
+ 
+             if (IsBad(MelonEnvironment.PackageName))
+                 throw new Exception();
+@@ -63,11 +64,14 @@ namespace MelonLoader
+             Fixes.ServerCertificateValidation.Install();
+             Assertions.LemonAssertMapping.Setup();
+ 
++            MelonLogger.MsgDirect("[trace] MelonUtils.Setup begin"); MelonLogger.Flush();
+             MelonUtils.Setup(AppDomain.CurrentDomain);
++            MelonLogger.MsgDirect("[trace] MelonUtils.Setup done"); MelonLogger.Flush();
+             BootstrapInterop.SetDefaultConsoleTitleWithGameName(UnityInformationHandler.GameName, 
+                 UnityInformationHandler.GameVersion);
+ 
+             MelonAssemblyResolver.Setup();
++            MelonLogger.MsgDirect("[trace] assembly resolver done"); MelonLogger.Flush();
+ 
+ #if NET6_0_OR_GREATER
+ 
+@@ -107,6 +111,7 @@ namespace MelonLoader
+             //  NativeStackWalk.LogNativeStackTrace();
+ 
+             Fixes.DotnetAssemblyLoadContextFix.Install();
++            MelonLogger.MsgDirect("[trace] loadcontext fix done"); MelonLogger.Flush();
+             Fixes.DotnetModHandlerRedirectionFix.Install();
+ #endif
+ 
+@@ -115,21 +120,26 @@ namespace MelonLoader
+             Fixes.ProcessFix.Install();
+ 
+ #if NET6_0_OR_GREATER
++            MelonLogger.MsgDirect("[trace] Il2CppInteropFixes.Install begin"); MelonLogger.Flush();
+             Fixes.Il2CppInteropFixes.Install();
++            MelonLogger.MsgDirect("[trace] Il2CppInteropFixes.Install done"); MelonLogger.Flush();
+             Fixes.Il2CppICallInjector.Install();
+ #endif
+ 
+             PatchShield.Install();
+ 
+             MelonPreferences.Load();
++            MelonLogger.MsgDirect("[trace] preferences loaded"); MelonLogger.Flush();
+ 
+             MelonCompatibilityLayer.LoadModules();
++            MelonLogger.MsgDirect("[trace] compat layers loaded"); MelonLogger.Flush();
+             
+             MelonHandler.LoadUserlibs(MelonEnvironment.UserLibsDirectory);
+             MelonHandler.LoadMelonFolders<MelonPlugin>(MelonEnvironment.PluginsDirectory);
+ 
+             MelonEvents.MelonHarmonyEarlyInit.Invoke();
+             MelonEvents.OnPreInitialization.Invoke();
++            MelonLogger.MsgDirect("[trace] Initialize finished"); MelonLogger.Flush();
+ 
+             return 0;
+         }
+@@ -144,7 +154,9 @@ namespace MelonLoader
+         {
+ #if NET6_0_OR_GREATER
+             if (_success)
++            MelonLogger.MsgDirect("[trace] Il2CppAssemblyGenerator.Run begin"); MelonLogger.Flush();
+                 _success = Il2CppAssemblyGenerator.Run();
++            MelonLogger.MsgDirect("[trace] Il2CppAssemblyGenerator.Run done"); MelonLogger.Flush();
+ #endif
+ 
+             return _success ? 0 : 1;
+diff --git a/MelonLoader/Fixes/Il2CppInteropFixes.cs b/MelonLoader/Fixes/Il2CppInteropFixes.cs
+index ea58d70..8c53a83 100644
+--- a/MelonLoader/Fixes/Il2CppInteropFixes.cs
++++ b/MelonLoader/Fixes/Il2CppInteropFixes.cs
+@@ -394,13 +394,13 @@ namespace MelonLoader.Fixes
+         {
+             if ((__instance == null)
+                 || (__0 == null)
+-                || (__0.Module == null)
+-                || (__0.Module.Assembly == null)
++                || (__0.DeclaringModule == null)
++                || (__0.DeclaringModule.Assembly == null)
+                 || !_assemblyLookup.TryGetValue(__instance, out Dictionary<string, AssemblyRewriteContext> contexts)
+                 || (contexts == null))
+                 return true;
+ 
+-            string assemblyName = __0.Module.Assembly.Name;
++            string assemblyName = __0.DeclaringModule.Assembly.Name;
+             if (string.IsNullOrEmpty(assemblyName)) 
+                 return false;
+ 
+diff --git a/MelonLoader/InternalUtils/UnityInformationHandler.cs b/MelonLoader/InternalUtils/UnityInformationHandler.cs
+index 27bf56e..d250809 100644
+--- a/MelonLoader/InternalUtils/UnityInformationHandler.cs
++++ b/MelonLoader/InternalUtils/UnityInformationHandler.cs
+@@ -40,18 +40,24 @@ namespace MelonLoader.InternalUtils
+ 
+         internal static void Setup()
+         {
++            MelonLogger.MsgDirect("[trace] unity info begin"); MelonLogger.Flush();
+             string gameDataPath = MelonEnvironment.UnityGameDataDirectory;
+ 
+             if (!string.IsNullOrEmpty(MelonLaunchOptions.Core.UnityVersion))
+                 EngineVersion = TryParse(MelonLaunchOptions.Core.UnityVersion);
+ 
+             AssetsManager assetsManager = new AssetsManager();
++            MelonLogger.MsgDirect("[trace] ReadGameInfo begin"); MelonLogger.Flush();
+             ReadGameInfo(assetsManager, gameDataPath);
++            MelonLogger.MsgDirect("[trace] ReadGameInfo done"); MelonLogger.Flush();
+             assetsManager.UnloadAll();
++            MelonLogger.MsgDirect("[trace] assets unloaded"); MelonLogger.Flush();
+ 
+             if (string.IsNullOrEmpty(GameDeveloper)
+                 || string.IsNullOrEmpty(GameName))
++            MelonLogger.MsgDirect("[trace] ReadGameInfoFallback begin"); MelonLogger.Flush();
+                 ReadGameInfoFallback();
++            MelonLogger.MsgDirect("[trace] ReadGameInfoFallback done"); MelonLogger.Flush();
+ 
+             if (EngineVersion == UnityVersion.MinVersion)
+                 EngineVersion = ReadVersionFallback(gameDataPath);
+@@ -64,6 +70,7 @@ namespace MelonLoader.InternalUtils
+                 GameVersion = DefaultInfo;
+ 
+             MelonLogger.WriteLine(Color.Magenta);
++            MelonLogger.MsgDirect("[trace] unity info ready"); MelonLogger.Flush();
+             MelonLogger.Msg($"Game Name: {GameName}");
+             MelonLogger.Msg($"Game Developer: {GameDeveloper}");
+             MelonLogger.Msg($"Unity Version: {EngineVersion}");
+diff --git a/MelonLoader/MelonLoader.csproj b/MelonLoader/MelonLoader.csproj
+index 239a7c6..92b620a 100644
+--- a/MelonLoader/MelonLoader.csproj
++++ b/MelonLoader/MelonLoader.csproj
+@@ -41,7 +41,7 @@
+ 		<ProjectReference Include="..\External\JNISharp\JNISharp\JNISharp.csproj" />
+ 	</ItemGroup>
+ 	<ItemGroup Condition="'$(TargetFramework)' == 'net8'">
+-		<PackageReference Include="AsmResolver.DotNet" Version="6.0.0-beta.2" />
++		<PackageReference Include="AsmResolver.DotNet" Version="6.0.0-beta.5" />
+ 		<PackageReference Include="Microsoft.Diagnostics.Runtime" Version="3.1.512801" />
+ 		<PackageReference Include="System.Configuration.ConfigurationManager" Version="8.0.0" />
+ 		<PackageReference Include="System.Drawing.Common" Version="8.0.8" />
+diff --git a/MelonLoader/MelonUtils.cs b/MelonLoader/MelonUtils.cs
+index 5b43368..40e5e14 100644
+--- a/MelonLoader/MelonUtils.cs
++++ b/MelonLoader/MelonUtils.cs
+@@ -36,6 +36,7 @@ namespace MelonLoader
+                 HashCode = ComputeSimpleSHA256Hash(Assembly.GetExecutingAssembly().Location);
+ 
+             Core.WelcomeMessage();
++            MelonLogger.MsgDirect("[trace] welcome message printed"); MelonLogger.Flush();
+ 
+             if (MelonEnvironment.IsMonoRuntime)
+                 SetCurrentDomainBaseDirectory(MelonEnvironment.GameRootDirectory, domain);
+@@ -48,7 +49,9 @@ namespace MelonLoader
+             AddNativeDLLDirectory(MelonEnvironment.UserLibsDirectory);
+ 
+             MelonHandler.Setup();
++            MelonLogger.MsgDirect("[trace] MelonHandler.Setup done"); MelonLogger.Flush();
+             UnityInformationHandler.Setup();
++            MelonLogger.MsgDirect("[trace] UnityInformationHandler.Setup done"); MelonLogger.Flush();
+ 
+             CurrentGameAttribute = new MelonGameAttribute(UnityInformationHandler.GameDeveloper, UnityInformationHandler.GameName);
+             CurrentPlatform = MelonPlatformAttribute.CompatiblePlatforms.ANDROID;

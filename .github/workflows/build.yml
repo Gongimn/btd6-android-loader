@@ -6,7 +6,7 @@ on:
     branches: [ main ]
 
 jobs:
-  probe:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout loader sources
@@ -42,9 +42,13 @@ jobs:
           JSON
           dotnet --version
 
-      - name: Bump AsmResolver
+      - name: Port to newer dependencies
         run: |
+          # AsmResolver 6.0.0-beta.5 (needed by current Il2CppInterop)
           sed -i 's/AsmResolver.DotNet" Version="6.0.0-beta.2"/AsmResolver.DotNet" Version="6.0.0-beta.5"/' ll/MelonLoader/MelonLoader.csproj
+          # TypeDefinition.Module was renamed to DeclaringModule
+          sed -i 's/__0\.Module/__0.DeclaringModule/g' ll/MelonLoader/Fixes/Il2CppInteropFixes.cs
+          grep -n "DeclaringModule" ll/MelonLoader/Fixes/Il2CppInteropFixes.cs
 
       - name: Build MonoMod
         run: |
@@ -52,7 +56,20 @@ jobs:
           dotnet build -c Release -v q 2>&1 | tail -10
 
       - name: Build MelonLoader net8
-        continue-on-error: true
         run: |
           cd ll
-          dotnet build MelonLoader/MelonLoader.csproj -c Release -f net8 -v m 2>&1 | grep -E "error|Build succeeded|Build FAILED" | head -40
+          dotnet build MelonLoader/MelonLoader.csproj -c Release -f net8 -v m 2>&1 | grep -E "error|Build succeeded|Build FAILED" | head -60
+
+      - name: Show output
+        if: always()
+        run: |
+          find ll/Output -maxdepth 4 -type d 2>/dev/null | head -20
+          ls -la ll/Output/Release/MelonLoader/net8 2>/dev/null | head -20
+
+      - name: Upload net8 folder
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melonloader-net8
+          path: ll/Output/Release/MelonLoader/net8/
+          if-no-files-found: warn

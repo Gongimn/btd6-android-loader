@@ -1,0 +1,35 @@
+name: build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout loader sources
+        uses: actions/checkout@v4
+        with:
+          repository: LemonLoader/MelonLoader
+          ref: 0.6.X
+          submodules: recursive
+          path: ll
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Inspect
+        run: |
+          ls -la ll
+          ls -la ll/External
+          dotnet --info
+
+      - name: Build managed MelonLoader (net8)
+        continue-on-error: true
+        run: |
+          cd ll
+          dotnet build MelonLoader/MelonLoader.csproj -c Release -f net8.0 -v m 2>&1 | tail -60

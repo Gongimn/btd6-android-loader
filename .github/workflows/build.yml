@@ -51,7 +51,7 @@ jobs:
         run: |
           cd ll
           git apply --verbose ../repo/patches/loader.patch || patch -p1 --fuzz=3 < ../repo/patches/loader.patch
-          grep -c "\[trace\]" MelonLoader/Core.cs MelonLoader/MelonUtils.cs MelonLoader/InternalUtils/UnityInformationHandler.cs
+          grep -c "\[trace\]" MelonLoader/Core.cs MelonLoader/MelonUtils.cs MelonLoader/InternalUtils/UnityInformationHandler.cs MelonLoader/Utils/APKAssetManager.cs
           grep -n "DeclaringModule" MelonLoader/Fixes/Il2CppInteropFixes.cs
 
       - name: Build MonoMod
@@ -61,12 +61,14 @@ jobs:
 
       - name: Build MelonLoader + NativeHost
         run: |
+          set -o pipefail
           cd ll
           dotnet build MelonLoader.NativeHost/MelonLoader.NativeHost.csproj -c Release -p:SolutionDir="$PWD/" -v m 2>&1 \
             | grep -E "error|Build succeeded|Build FAILED" | head -60
 
       - name: Build Il2CppAssemblyGenerator
         run: |
+          set -o pipefail
           cd ll
           dotnet build Dependencies/Il2CppAssemblyGenerator/Il2CppAssemblyGenerator.csproj -c Release \
             -p:SolutionDir="$PWD/" \
@@ -88,6 +90,18 @@ jobs:
           find ll/Output -maxdepth 5 -type d 2>/dev/null | head -40
           ls -la ll/Output/Release/MelonLoader/net8 2>/dev/null | head -30
 
+      - name: Package melon_data.zip
+        run: |
+          set -e
+          curl -sSL -o /tmp/stock.zip https://github.com/LemonLoader/MelonLoader/releases/download/0.6.5.1/melon_data.zip
+          rm -rf /tmp/md && mkdir -p /tmp/md
+          unzip -q /tmp/stock.zip -d /tmp/md
+          cp -a ll/Output/Release/MelonLoader/. /tmp/md/MelonLoader/
+          ( cd /tmp/md && zip -qr /tmp/melon_data.zip . )
+          cp /tmp/melon_data.zip melon_data.zip
+          ls -la melon_data.zip
+          unzip -l melon_data.zip | tail -3
+
       - name: Upload build output
         if: always()
         uses: actions/upload-artifact@v4
@@ -95,3 +109,11 @@ jobs:
           name: melonloader-build
           path: ll/Output/Release/MelonLoader/
           if-no-files-found: warn
+
+      - name: Upload melon data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: melon-data-zip
+          path: melon_data.zip
+          if-no-files-found: error

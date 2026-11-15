@@ -50,9 +50,7 @@ jobs:
       - name: Apply our patches
         run: |
           cd ll
-          git apply --verbose ../repo/patches/loader.patch || patch -p1 --fuzz=3 < ../repo/patches/loader.patch
-          grep -c "\[trace\]" MelonLoader/Core.cs MelonLoader/MelonUtils.cs MelonLoader/InternalUtils/UnityInformationHandler.cs MelonLoader/Utils/APKAssetManager.cs
-          grep -n "DeclaringModule" MelonLoader/Fixes/Il2CppInteropFixes.cs
+          python3 ../repo/scripts/patch_loader.py
 
       - name: Build MonoMod
         run: |
@@ -67,7 +65,6 @@ jobs:
             | grep -E "error|Build succeeded|Build FAILED" | head -60
 
       - name: Build Il2CppAssemblyGenerator
-        continue-on-error: true
         run: |
           set -o pipefail
           cd ll
@@ -79,6 +76,7 @@ jobs:
       - name: Build Il2Cpp support module
         continue-on-error: true
         run: |
+          set -o pipefail
           cd ll
           dotnet build Dependencies/SupportModules/Il2Cpp/Il2Cpp.csproj -c Release \
             -p:SolutionDir="$PWD/" \
@@ -92,17 +90,19 @@ jobs:
           ls -la ll/Output/Release/MelonLoader/net8 2>/dev/null | head -30
 
       - name: Package melon_data.zip
-        if: always()
         run: |
           set -e
-          curl -sSL -o /tmp/stock.zip https://github.com/LemonLoader/MelonLoader/releases/download/0.6.5.1/melon_data.zip
-          rm -rf /tmp/md && mkdir -p /tmp/md
-          unzip -q /tmp/stock.zip -d /tmp/md
-          cp -a ll/Output/Release/MelonLoader/. /tmp/md/MelonLoader/
-          ( cd /tmp/md && zip -qr /tmp/melon_data.zip . )
-          cp /tmp/melon_data.zip melon_data.zip
-          ls -la melon_data.zip
-          unzip -l melon_data.zip | tail -3
+          curl -sSL -o /tmp/melon_data_stock.zip \
+            https://github.com/LemonLoader/MelonLoader/releases/download/0.6.5.1/melon_data.zip
+          mkdir -p pack
+          unzip -q /tmp/melon_data_stock.zip -d pack
+          rm -rf pack/MelonLoader/net8 pack/MelonLoader/net35
+          cp -r ll/Output/Release/MelonLoader/. pack/MelonLoader/
+          cd pack
+          rm -f /tmp/melon_data.zip
+          zip -qr /tmp/melon_data.zip *
+          ls -la /tmp/melon_data.zip
+          unzip -l /tmp/melon_data.zip | tail -3
 
       - name: Upload build output
         if: always()
@@ -112,10 +112,9 @@ jobs:
           path: ll/Output/Release/MelonLoader/
           if-no-files-found: warn
 
-      - name: Upload melon data
-        if: always()
+      - name: Upload melon_data.zip
         uses: actions/upload-artifact@v4
         with:
-          name: melon-data-zip
-          path: melon_data.zip
+          name: melon-data
+          path: /tmp/melon_data.zip
           if-no-files-found: error

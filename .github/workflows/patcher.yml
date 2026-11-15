@@ -27,23 +27,25 @@ jobs:
       - name: Make installer use local melon data
         run: |
           cd ins
-          python3 -c "
+          python3 - <<'PY'
           import io
           p = 'App/Utils/PatchRunner.cs'
           s = io.open(p, encoding='utf-8-sig').read()
-          m = '_logger?.Log(\"Retrieving release info from GitHub\");'
+          m = '_logger?.Log("Retrieving release info from GitHub");'
           assert m in s, 'marker not found'
           nl = chr(10)
-          inject = '        if (File.Exists(\"/sdcard/Download/melon_data_custom.zip\"))' + nl + \
-                   '        {' + nl + \
-                   '            _logger?.Log(\"Using local melon data (custom)\");' + nl + \
-                   '            File.Copy(\"/sdcard/Download/melon_data_custom.zip\", destination);' + nl + \
-                   '            return true;' + nl + \
-                   '        }' + nl + nl
+          inject = (
+              '        if (File.Exists("/sdcard/Download/melon_data_custom.zip"))' + nl +
+              '        {' + nl +
+              '            _logger?.Log("Using local melon data (custom)");' + nl +
+              '            File.Copy("/sdcard/Download/melon_data_custom.zip", destination);' + nl +
+              '            return true;' + nl +
+              '        }' + nl + nl
+          )
           s = s.replace(m, inject + m, 1)
           io.open(p, 'w', encoding='utf-8-sig').write(s)
           print('patched')
-          "
+          PY
           grep -n "melon_data_custom" App/Utils/PatchRunner.cs
 
       - name: Generate keystore
@@ -51,10 +53,14 @@ jobs:
           keytool -genkeypair -v -keystore ml.keystore -alias melon -keyalg RSA -keysize 2048 -validity 10000 -storepass mlpatch -keypass mlpatch -dname "CN=Gongimn, O=mods, C=RU"
 
       - name: Install MAUI Android workload
-        run: dotnet workload install maui-android
+        run: |
+          cd ins
+          dotnet workload install maui-android
+          dotnet workload list
 
       - name: Build patcher APK
         run: |
+          set -o pipefail
           cd ins
           dotnet publish App/MelonLoader.Installer.App.csproj -c Release -f net8.0-android \
             -p:ApplicationId=com.gongimn.mlpatch \
@@ -64,12 +70,16 @@ jobs:
             -p:AndroidSigningKeyPass=mlpatch \
             -p:AndroidSigningStorePass=mlpatch \
             -p:AndroidPackageFormat=apk \
-            -p:CheckEolTargetFramework=false 2>&1 | tail -40
+            -p:CheckEolTargetFramework=false 2>&1 | tee /tmp/publish.log | tail -60
+
+      - name: Publish log (on failure)
+        if: failure()
+        run: tail -250 /tmp/publish.log || true
 
       - name: Upload patcher
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: mlpatcher-apk
-          path: ins/App/bin/Release/net8.0-android/publish/*.apk
-          if-no-files-found: warn
+          path: ins/App/bin/**/publish/*.apk
+          if-no-files-found: error

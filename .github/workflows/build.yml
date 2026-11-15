@@ -31,20 +31,28 @@ jobs:
                 || git clone --depth 1 --recursive https://github.com/SamboyCoding/$r.git "$r" || true
             fi
           done
-          ls -la
 
-      - name: Bump AsmResolver to match newer Il2CppInterop
+      - name: Pin SDK 8
+        run: |
+          cd ll
+          cat > global.json <<'JSON'
+          {
+            "sdk": { "version": "8.0.100", "rollForward": "latestFeature" }
+          }
+          JSON
+          dotnet --version
+
+      - name: Bump AsmResolver
         run: |
           sed -i 's/AsmResolver.DotNet" Version="6.0.0-beta.2"/AsmResolver.DotNet" Version="6.0.0-beta.5"/' ll/MelonLoader/MelonLoader.csproj
-          grep -n AsmResolver ll/MelonLoader/MelonLoader.csproj | head
 
       - name: Build MonoMod
         run: |
           cd ll/External/MonoMod
-          dotnet build -c Release -v q 2>&1 | tail -15
+          dotnet build -c Release -v q 2>&1 | tail -10
 
       - name: Build MelonLoader net8
         continue-on-error: true
         run: |
           cd ll
-          dotnet build MelonLoader/MelonLoader.csproj -c Release -f net8.0 -v m 2>&1 | grep -E "error|Build succeeded|Build FAILED" | head -40
+          dotnet build MelonLoader/MelonLoader.csproj -c Release -f net8 -v m 2>&1 | grep -E "error|Build succeeded|Build FAILED" | head -40

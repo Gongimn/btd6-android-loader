@@ -67,6 +67,7 @@ jobs:
             | grep -E "error|Build succeeded|Build FAILED" | head -60
 
       - name: Build Il2CppAssemblyGenerator
+        continue-on-error: true
         run: |
           set -o pipefail
           cd ll
@@ -91,6 +92,7 @@ jobs:
           ls -la ll/Output/Release/MelonLoader/net8 2>/dev/null | head -30
 
       - name: Package melon_data.zip
+        if: always()
         run: |
           set -e
           curl -sSL -o /tmp/stock.zip https://github.com/LemonLoader/MelonLoader/releases/download/0.6.5.1/melon_data.zip

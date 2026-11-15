@@ -277,7 +277,57 @@ sub("MelonLoader/InternalUtils/UnityInformationHandler.cs",
     """                assetsManager.LoadIncludedClassPackage();""",
     """                MelonLogger.MsgDirect("[trace] RGI LoadIncludedClassPackage begin"); MelonLogger.Flush();
                 assetsManager.LoadIncludedClassPackage();
-                MelonLogger.MsgDirect("[trace] RGI LoadIncludedClassPackage done"); MelonLogger.Flush();""")
+                MelonLogger.MsgDirect("[trace] RGI LoadIncludedClassPackage done"); MelonLogger.Flush();
+
+                MelonLogger.MsgDirect($"[trace] RGI typetree={instance.file.Metadata.TypeTreeEnabled} unity={instance.file.Metadata.UnityVersion}"); MelonLogger.Flush();
+
+                // PlayerSettings parsing needs the class database and is what killed the
+                // process on BTD6/Unity 6. Off by default; opt in with a touch file.
+                if (!File.Exists("/sdcard/Download/ml_full_unityinfo"))
+                {
+                    MelonLogger.MsgDirect("[trace] RGI playerSettings parsing disabled"); MelonLogger.Flush();
+                    if (EngineVersion == UnityVersion.MinVersion)
+                    {
+                        MelonLogger.MsgDirect("[trace] RGI reading version from header"); MelonLogger.Flush();
+                        EngineVersion = GetVersionFromGlobalGameManagers(APKAssetManager.GetAssetBytes(bundlePath));
+                    }
+                    MelonLogger.MsgDirect($"[trace] RGI engine version = {EngineVersion}"); MelonLogger.Flush();
+                    instance.file.Close();
+                    instance = null;
+                    return;
+                }
+                MelonLogger.MsgDirect("[trace] RGI playerSettings parsing enabled (opt-in)"); MelonLogger.Flush();""")
+
+sub("MelonLoader/InternalUtils/UnityInformationHandler.cs",
+    """                List<AssetFileInfo> assetFiles = instance.file.GetAssetsOfType(AssetClassID.PlayerSettings);""",
+    """                MelonLogger.MsgDirect("[trace] RGI GetAssetsOfType begin"); MelonLogger.Flush();
+                List<AssetFileInfo> assetFiles = instance.file.GetAssetsOfType(AssetClassID.PlayerSettings);
+                MelonLogger.MsgDirect($"[trace] RGI GetAssetsOfType done: {assetFiles.Count}"); MelonLogger.Flush();""")
+
+sub("MelonLoader/InternalUtils/UnityInformationHandler.cs",
+    """                    AssetTypeValueField playerSettings_baseField = assetsManager.GetBaseField(instance, playerSettings);""",
+    """                    MelonLogger.MsgDirect("[trace] RGI GetBaseField begin"); MelonLogger.Flush();
+                    AssetTypeValueField playerSettings_baseField = assetsManager.GetBaseField(instance, playerSettings);
+                    MelonLogger.MsgDirect("[trace] RGI GetBaseField done"); MelonLogger.Flush();""")
+
+sub("MelonLoader/InternalUtils/UnityInformationHandler.cs",
+    """            try
+            {
+                SetupInternal();
+            }""",
+    """            try
+            {
+                if (File.Exists("/sdcard/Download/ml_skip_unityinfo"))
+                {
+                    MelonLogger.MsgDirect("[trace] unity info skipped by switch"); MelonLogger.Flush();
+                    GameDeveloper = DefaultInfo;
+                    GameName = DefaultInfo;
+                    GameVersion = DefaultInfo;
+                    return;
+                }
+
+                SetupInternal();
+            }""")
 
 sub("MelonLoader/InternalUtils/UnityInformationHandler.cs",
     """            catch (Exception ex)

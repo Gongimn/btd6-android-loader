@@ -2,10 +2,6 @@ name: patcher
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
-    paths:
-      - '.github/workflows/patcher.yml'
 
 jobs:
   build-patcher:
@@ -22,35 +18,31 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
-      - name: Patch melon data source
+      - name: Make installer use local melon data
         run: |
           cd ins
-          python3 - <<'PY'
+          python3 -c "
           import io
-          p = "App/Utils/PatchRunner.cs"
-          s = io.open(p, encoding="utf-8-sig").read()
-          marker = '_logger?.Log("Retrieving release info from GitHub");'
-          assert marker in s, "marker not found"
-          inject = '''        if (File.Exists("/sdcard/Download/melon_data_custom.zip"))
-        {
-            _logger?.Log("Using local melon data (custom)");
-            File.Copy("/sdcard/Download/melon_data_custom.zip", destination);
-            return true;
-        }
-
-'''
-          s = s.replace(marker, inject + marker, 1)
-          io.open(p, "w", encoding="utf-8-sig").write(s)
-          print("patched")
-          PY
+          p = 'App/Utils/PatchRunner.cs'
+          s = io.open(p, encoding='utf-8-sig').read()
+          m = '_logger?.Log(\"Retrieving release info from GitHub\");'
+          assert m in s, 'marker not found'
+          nl = chr(10)
+          inject = '        if (File.Exists(\"/sdcard/Download/melon_data_custom.zip\"))' + nl + \
+                   '        {' + nl + \
+                   '            _logger?.Log(\"Using local melon data (custom)\");' + nl + \
+                   '            File.Copy(\"/sdcard/Download/melon_data_custom.zip\", destination);' + nl + \
+                   '            return true;' + nl + \
+                   '        }' + nl + nl
+          s = s.replace(m, inject + m, 1)
+          io.open(p, 'w', encoding='utf-8-sig').write(s)
+          print('patched')
+          "
           grep -n "melon_data_custom" App/Utils/PatchRunner.cs
 
       - name: Generate keystore
         run: |
-          keytool -genkeypair -v -keystore ml.keystore -alias melon \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass mlpatch -keypass mlpatch \
-            -dname "CN=Gongimn, OU=mods, O=mods, C=RU"
+          keytool -genkeypair -v -keystore ml.keystore -alias melon -keyalg RSA -keysize 2048 -validity 10000 -storepass mlpatch -keypass mlpatch -dname "CN=Gongimn, O=mods, C=RU"
 
       - name: Install MAUI Android workload
         run: dotnet workload install maui-android
@@ -65,7 +57,7 @@ jobs:
             -p:AndroidSigningKeyAlias=melon \
             -p:AndroidSigningKeyPass=mlpatch \
             -p:AndroidSigningStorePass=mlpatch \
-            -p:AndroidPackageFormat=apk 2>&1 | tail -30
+            -p:AndroidPackageFormat=apk 2>&1 | tail -40
 
       - name: Upload patcher
         if: always()

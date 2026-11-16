@@ -44,6 +44,13 @@ sub("MelonLoader/Core.cs",
     "            MelonEnvironment.PackageName = BootstrapInterop.NativeGetPackageName();",
     """            MelonEnvironment.PackageName = BootstrapInterop.NativeGetPackageName();
 
+            // Android drops stdout/stderr and writes no tombstone for this process, so a
+            // native abort leaves nothing behind. Keep both streams and the runtime's
+            // last words on disk, then start the heartbeat: it tells us afterwards
+            // whether the process died or just hung.
+            CaptureStdio();
+            InstallCrashDiagnostics();
+
             // heartbeat: tells us later whether the process died or just hung
             try
             {
@@ -109,13 +116,59 @@ sub("MelonLoader/Core.cs",
     """            PatchShield.Install();
             MelonLogger.MsgDirect("[trace] patch shield done"); MelonLogger.Flush();""")
 
+# Android discards an application's stdout/stderr and produces no tombstone when the
+# process aborts itself, so the fatal message of a native abort is lost. Redirect both
+# streams to a file and keep the runtime's unhandled-exception reports next to it.
+sub("MelonLoader/Core.cs",
+    "        private static void AddUnityDebugLog()",
+    '''        [DllImport("libc", SetLastError = true)]
+        private static extern int open(string path, int flags, int mode);
+
+        [DllImport("libc", SetLastError = true)]
+        private static extern int dup2(int oldfd, int newfd);
+
+        private static void CaptureStdio()
+        {
+            try
+            {
+                var log = Path.Combine(MelonEnvironment.MelonLoaderDirectory, "stdio.log");
+                int fd = open(log, 0x241, 0x1B6); // O_WRONLY | O_CREAT | O_TRUNC, 0666
+                if (fd < 0)
+                    return;
+                dup2(fd, 1);
+                dup2(fd, 2);
+            }
+            catch { }
+        }
+
+        private static void InstallCrashDiagnostics()
+        {
+            try
+            {
+                var log = Path.Combine(MelonEnvironment.MelonLoaderDirectory, "unhandled.log");
+                AppDomain.CurrentDomain.UnhandledException += (sender, args) =>
+                {
+                    try { File.AppendAllText(log, DateTime.Now + " APPDOMAIN: " + args.ExceptionObject + "\\n"); } catch { }
+                };
+                TaskScheduler.UnobservedTaskException += (sender, args) =>
+                {
+                    try { File.AppendAllText(log, DateTime.Now + " TASK: " + args.Exception + "\\n"); } catch { }
+                };
+            }
+            catch { }
+        }
+
+        private static void AddUnityDebugLog()''')
+
 # Android ships no /etc/ssl/certs, so the OpenSSL inside this process starts with
 # zero trust anchors and every HTTPS request from a mod dies with
 # UntrustedRoot/PartialChain. Feed it the system CA store early, before any TLS.
 sub("MelonLoader/Core.cs",
     "using System.Text;",
     """using System.Text;
-using System.Security.Cryptography.X509Certificates;""")
+using System.Security.Cryptography.X509Certificates;
+using System.Runtime.InteropServices;
+using System.Threading.Tasks;""")
 
 sub("MelonLoader/Core.cs",
     '            MelonLogger.Msg("Initialized JNI");',
@@ -655,13 +708,36 @@ sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
         var delegateReference = new Il2CppToMonoDelegateReference(@delegate, methodInfo.Pointer);
 """)
 
-# The il2cpp MethodInfo object cannot be built from here without going through
-# the reflection code that crashes above, so the field is left at its default.
+# il2cpp aborts the process when a delegate produced here is invoked from a Task
+# continuation while Delegate.method_info is null. Building the reflection object
+# through Il2CppSystem.Reflection crashes on 6000.x, but the il2cpp C API hands the
+# same object out directly, so the field can be filled the way upstream does.
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/IL2CPP.cs",
+    """    [DllImport("libil2cpp.so", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern IntPtr il2cpp_method_get_name(IntPtr method);""",
+    """    [DllImport("libil2cpp.so", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern IntPtr il2cpp_method_get_name(IntPtr method);
+
+    [DllImport("libil2cpp.so", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+    public static extern IntPtr il2cpp_method_get_object(IntPtr method, IntPtr refclass);""")
+
 sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
     """        converted.method_ptr = methodInfo.MethodPointer;
         converted.method_info = nativeDelegateInvokeMethod; // todo: is this truly a good hack?""",
-    """        Logger.Instance.LogInformation("convert: {Type} done", typeof(TIl2Cpp).FullName);
-        converted.method_ptr = methodInfo.MethodPointer;""")
+    """        IntPtr nativeInvokeObject = IntPtr.Zero;
+        try
+        {
+            nativeInvokeObject = IL2CPP.il2cpp_method_get_object(nativeDelegateInvokeMethod, classTypePtr);
+        }
+        catch (Exception ex)
+        {
+            Logger.Instance.LogWarning("convert: il2cpp_method_get_object failed: {Message}", ex.Message);
+        }
+
+        Logger.Instance.LogInformation("convert: {Type} done", typeof(TIl2Cpp).FullName);
+        converted.method_ptr = methodInfo.MethodPointer;
+        if (nativeInvokeObject != IntPtr.Zero)
+            converted.method_info = new Il2CppSystem.Reflection.MethodInfo(nativeInvokeObject);""")
 
 # Native Invoke lookup (replaces il2cpp reflection) + pointer-keyed signatures.
 sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",

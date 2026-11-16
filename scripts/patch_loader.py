@@ -267,44 +267,77 @@ sub("External/Il2CppInterop/Il2CppInterop.Runtime/Injection/Hooks/MetadataCache_
 
         private static unsafe IntPtr ScanForTarget()
         {
-            var module = InjectorHelpers.Il2CppModule;
-            if (module == null)
-                return IntPtr.Zero;
-
-            byte* imageBase = (byte*)module.BaseAddress;
-            int imageSize = module.ModuleMemorySize;
-            if (imageSize < 0x1000)
-                return IntPtr.Zero;
-
-            // ELF64 program headers tell us which parts of the image are executable.
-            if (*(uint*)imageBase != 0x464C457Fu)
-                return IntPtr.Zero;
-
-            ulong phoff = *(ulong*)(imageBase + 0x20);
-            ushort phentsize = *(ushort*)(imageBase + 0x36);
-            ushort phnum = *(ushort*)(imageBase + 0x38);
-
-            for (int i = 0; i < phnum; i++)
+            // Process.Modules is unreliable here: on Android the reported base of
+            // libil2cpp.so can point into the middle of the image, so read
+            // /proc/self/maps and scan the executable mappings of the library as-is.
+            string fileName = null;
+            try
             {
-                byte* ph = imageBase + phoff + (ulong)i * phentsize;
-                if (*(uint*)ph != 1u) // PT_LOAD
-                    continue;
-                if ((*(uint*)(ph + 4) & 1u) == 0) // PF_X
-                    continue;
-
-                ulong vaddr = *(ulong*)(ph + 0x10);
-                ulong filesz = *(ulong*)(ph + 0x20);
-                if (filesz == 0 || filesz > int.MaxValue)
-                    continue;
-
-                byte* segStart = imageBase + vaddr;
-                if ((byte*)module.BaseAddress + imageSize <= segStart)
-                    continue;
-
-                IntPtr hit = ScanSegment(segStart, (int)filesz);
-                if (hit != IntPtr.Zero)
-                    return hit;
+                var module = InjectorHelpers.Il2CppModule;
+                if (module != null)
+                    fileName = module.FileName;
             }
+            catch
+            {
+            }
+
+            if (string.IsNullOrEmpty(fileName))
+                fileName = "libil2cpp.so";
+            else
+                fileName = System.IO.Path.GetFileName(fileName);
+
+            int mappings = 0;
+            try
+            {
+                foreach (string line in System.IO.File.ReadAllLines("/proc/self/maps"))
+                {
+                    int space = line.IndexOf(' ');
+                    if (space < 8 || space + 4 >= line.Length)
+                        continue;
+
+                    string range = line.Substring(0, space);
+                    int dash = range.IndexOf('-');
+                    if (dash < 0)
+                        continue;
+
+                    if (line[space + 3] != 'x') // r-xp / --xp
+                        continue;
+
+                    if (!line.Contains(fileName))
+                        continue;
+
+                    ulong start, end;
+                    try
+                    {
+                        start = Convert.ToUInt64(range.Substring(0, dash), 16);
+                        end = Convert.ToUInt64(range.Substring(dash + 1), 16);
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+
+                    ulong length = end - start;
+                    if (length < 0x1000 || length > int.MaxValue)
+                        continue;
+
+                    mappings++;
+                    Logger.Instance.LogInformation("Signature scan: mapping 0x{Start} size 0x{Length}",
+                        start.ToString("X2"), length.ToString("X2"));
+
+                    IntPtr hit = ScanSegment((byte*)start, (int)length);
+                    if (hit != IntPtr.Zero)
+                        return hit;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.LogWarning($"Signature scan failed: {ex}");
+                return IntPtr.Zero;
+            }
+
+            if (mappings == 0)
+                Logger.Instance.LogWarning("Signature scan: no executable mappings found for {File}", fileName);
 
             return IntPtr.Zero;
         }
@@ -356,6 +389,31 @@ sub("External/Il2CppInterop/Il2CppInterop.Runtime/Injection/Hooks/MetadataCache_
 
             return IntPtr.Zero;
         }""")
+
+# Trace the delegate conversion: it is where the process currently dies, and a
+# native crash there leaves no managed stack trace behind.
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
+    """        var il2CppDelegateType = Il2CppSystem.Type.internal_from_handle(IL2CPP.il2cpp_class_get_type(classTypePtr));
+        var nativeDelegateInvokeMethod = il2CppDelegateType.GetMethod("Invoke");""",
+    """        Logger.Instance.LogInformation("convert: {Type} class=0x{Class} native=0x{Native}",
+            typeof(TIl2Cpp).FullName, classTypePtr.ToInt64().ToString("X2"),
+            IL2CPP.il2cpp_class_get_type(classTypePtr).ToInt64().ToString("X2"));
+
+        var il2CppDelegateType = Il2CppSystem.Type.internal_from_handle(IL2CPP.il2cpp_class_get_type(classTypePtr));
+        var nativeDelegateInvokeMethod = il2CppDelegateType.GetMethod("Invoke");
+
+        Logger.Instance.LogInformation("convert: {Type} Invoke method resolved", typeof(TIl2Cpp).FullName);""")
+
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
+    """        var delegateReference = new Il2CppToMonoDelegateReference(@delegate, methodInfo.Pointer);""",
+    """        Logger.Instance.LogInformation("convert: {Type} instantiating native delegate", typeof(TIl2Cpp).FullName);
+        var delegateReference = new Il2CppToMonoDelegateReference(@delegate, methodInfo.Pointer);
+        Logger.Instance.LogInformation("convert: {Type} native delegate reference created", typeof(TIl2Cpp).FullName);""")
+
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
+    """        converted.method_ptr = methodInfo.MethodPointer;""",
+    """        Logger.Instance.LogInformation("convert: {Type} done", typeof(TIl2Cpp).FullName);
+        converted.method_ptr = methodInfo.MethodPointer;""")
 
 # ------------------------------------------------------ APKAssetManager
 sub("MelonLoader/Utils/APKAssetManager.cs",

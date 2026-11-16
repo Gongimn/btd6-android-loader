@@ -710,17 +710,8 @@ sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
 
 # il2cpp aborts the process when a delegate produced here is invoked from a Task
 # continuation while Delegate.method_info is null. Building the reflection object
-# through Il2CppSystem.Reflection crashes on 6000.x, but the il2cpp C API hands the
-# same object out directly, so the field can be filled the way upstream does.
-sub("External/Il2CppInterop/Il2CppInterop.Runtime/IL2CPP.cs",
-    """    [DllImport("libil2cpp.so", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    public static extern IntPtr il2cpp_method_get_name(IntPtr method);""",
-    """    [DllImport("libil2cpp.so", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    public static extern IntPtr il2cpp_method_get_name(IntPtr method);
-
-    [DllImport("libil2cpp.so", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-    public static extern IntPtr il2cpp_method_get_object(IntPtr method, IntPtr refclass);""")
-
+# through Il2CppSystem.Reflection crashes on 6000.x, but IL2CPP.il2cpp_method_get_object
+# hands the same object out directly, so the field can be filled the way upstream does.
 sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
     """        converted.method_ptr = methodInfo.MethodPointer;
         converted.method_info = nativeDelegateInvokeMethod; // todo: is this truly a good hack?""",

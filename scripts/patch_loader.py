@@ -173,6 +173,32 @@ sub("MelonLoader/MelonUtils.cs",
     """            UnityInformationHandler.Setup();
             MelonLogger.MsgDirect("[trace] UnityInformationHandler.Setup done"); MelonLogger.Flush();""")
 
+# ------------------------------------------------------- SupportModule.cs
+# Without the il2cpp support module nothing delivers Unity callbacks (OnUpdate/OnGUI)
+# to mods, so the Mod Helper UI never appears. Its failure is swallowed by
+# MelonDebug.Error unless debug logging was requested on the command line, which
+# we cannot do on Android - make it loud instead.
+sub("MelonLoader/SupportModule/SupportModule.cs",
+    """                catch (Exception ex)
+                {
+                    MelonDebug.Error($"Support Module [{enumerator.Current.FileName}] threw an Exception: {ex}");
+                    continue;
+                }""",
+    """                catch (Exception ex)
+                {
+                    MelonLogger.MsgDirect($"[trace] Support Module [{enumerator.Current.FileName}] EXCEPTION: {ex}"); MelonLogger.Flush();
+                    continue;
+                }""")
+
+sub("MelonLoader/SupportModule/SupportModule.cs",
+    """        internal static bool Setup()
+        {
+            BaseDirectory = MelonEnvironment.SupportModuleDirectory;""",
+    """        internal static bool Setup()
+        {
+            BaseDirectory = MelonEnvironment.SupportModuleDirectory;
+            MelonLogger.MsgDirect($"[trace] SupportModule.Setup dir='{BaseDirectory}'"); MelonLogger.Flush();""")
+
 # ------------------------------------------------------ APKAssetManager
 sub("MelonLoader/Utils/APKAssetManager.cs",
     """        JObjectArray<JString> assets = JNI.CallObjectMethod<JObjectArray<JString>>(assetManager, JNI.GetMethodID(JNI.GetObjectClass(assetManager), "list", "(Ljava/lang/String;)[Ljava/lang/String;"), new JValue(pathString));

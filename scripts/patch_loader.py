@@ -72,10 +72,61 @@ sub("MelonLoader/Core.cs",
             MelonLogger.MsgDirect("[trace] MelonUtils.Setup done"); MelonLogger.Flush();""")
 
 sub("MelonLoader/Core.cs",
+    "            MelonAssemblyResolver.Setup();",
+    """            MelonAssemblyResolver.Setup();
+            MelonLogger.MsgDirect("[trace] assembly resolver done"); MelonLogger.Flush();""")
+
+sub("MelonLoader/Core.cs",
+    """            Fixes.DotnetAssemblyLoadContextFix.Install();
+            Fixes.DotnetModHandlerRedirectionFix.Install();""",
+    """            Fixes.DotnetAssemblyLoadContextFix.Install();
+            MelonLogger.MsgDirect("[trace] loadcontext fix done"); MelonLogger.Flush();
+            Fixes.DotnetModHandlerRedirectionFix.Install();
+            MelonLogger.MsgDirect("[trace] mod handler redirect done"); MelonLogger.Flush();""")
+
+sub("MelonLoader/Core.cs",
+    """            Fixes.ForcedCultureInfo.Install();
+            Fixes.InstancePatchFix.Install();
+            Fixes.ProcessFix.Install();""",
+    """            Fixes.ForcedCultureInfo.Install();
+            Fixes.InstancePatchFix.Install();
+            Fixes.ProcessFix.Install();
+            MelonLogger.MsgDirect("[trace] basic fixes done"); MelonLogger.Flush();""")
+
+sub("MelonLoader/Core.cs",
     "            Fixes.Il2CppInteropFixes.Install();",
     """            MelonLogger.MsgDirect("[trace] Il2CppInteropFixes.Install begin"); MelonLogger.Flush();
             Fixes.Il2CppInteropFixes.Install();
             MelonLogger.MsgDirect("[trace] Il2CppInteropFixes.Install done"); MelonLogger.Flush();""")
+
+sub("MelonLoader/Core.cs",
+    "            Fixes.Il2CppICallInjector.Install();",
+    """            Fixes.Il2CppICallInjector.Install();
+            MelonLogger.MsgDirect("[trace] ICall injector done"); MelonLogger.Flush();""")
+
+sub("MelonLoader/Core.cs",
+    "            PatchShield.Install();",
+    """            PatchShield.Install();
+            MelonLogger.MsgDirect("[trace] patch shield done"); MelonLogger.Flush();""")
+
+sub("MelonLoader/Core.cs",
+    "            MelonPreferences.Load();",
+    """            MelonPreferences.Load();
+            MelonLogger.MsgDirect("[trace] preferences loaded"); MelonLogger.Flush();""")
+
+sub("MelonLoader/Core.cs",
+    "            MelonCompatibilityLayer.LoadModules();",
+    """            MelonCompatibilityLayer.LoadModules();
+            MelonLogger.MsgDirect("[trace] compat layers loaded"); MelonLogger.Flush();""")
+
+sub("MelonLoader/Core.cs",
+    """            MelonHandler.LoadUserlibs(MelonEnvironment.UserLibsDirectory);
+            MelonHandler.LoadMelonFolders<MelonPlugin>(MelonEnvironment.PluginsDirectory);""",
+    """            MelonLogger.MsgDirect("[trace] loading userlibs"); MelonLogger.Flush();
+            MelonHandler.LoadUserlibs(MelonEnvironment.UserLibsDirectory);
+            MelonLogger.MsgDirect("[trace] loading plugins"); MelonLogger.Flush();
+            MelonHandler.LoadMelonFolders<MelonPlugin>(MelonEnvironment.PluginsDirectory);
+            MelonLogger.MsgDirect("[trace] plugins loaded"); MelonLogger.Flush();""")
 
 sub("MelonLoader/Core.cs",
     """            MelonEvents.MelonHarmonyEarlyInit.Invoke();
@@ -93,8 +144,16 @@ sub("MelonLoader/Core.cs",
     """            if (_success)
                 _success = Il2CppAssemblyGenerator.Run();""",
     """            MelonLogger.MsgDirect("[trace] Il2CppAssemblyGenerator.Run begin"); MelonLogger.Flush();
-            if (_success)
-                _success = Il2CppAssemblyGenerator.Run();
+            try
+            {
+                if (_success)
+                    _success = Il2CppAssemblyGenerator.Run();
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.MsgDirect($"[trace] Il2CppAssemblyGenerator EXCEPTION: {ex.GetType().Name}: {ex.Message}"); MelonLogger.Flush();
+                _success = false;
+            }
             MelonLogger.MsgDirect($"[trace] Il2CppAssemblyGenerator.Run done, success={_success}"); MelonLogger.Flush();""")
 
 # --------------------------------------------------------- MelonUtils.cs
@@ -216,8 +275,16 @@ sub("MelonLoader/InternalUtils/UnityInformationHandler.cs",
             string gameDataPath = MelonEnvironment.UnityGameDataDirectory;
             MelonLogger.MsgDirect($"[trace] gameDataPath='{gameDataPath}'"); MelonLogger.Flush();""")
 
+# The AssetsTools.NET- based parser stalls forever on Unity 6000 (APKAssetStream is
+# not seekable and LoadClassDatabaseFromPackage never returns for 6000.3).
+# Only the engine version really matters, and it is a plain header string.
 sub("MelonLoader/InternalUtils/UnityInformationHandler.cs",
-    """                string bundlePath = Path.Combine(gameDataPath, "globalgamemanagers");
+    """        private static void ReadGameInfo(AssetsManager assetsManager, string gameDataPath)
+        {
+            AssetsFileInstance instance = null;
+            try
+            {
+                string bundlePath = Path.Combine(gameDataPath, "globalgamemanagers");
                 if (!APKAssetManager.DoesAssetExist(bundlePath))
                     bundlePath = Path.Combine(gameDataPath, "mainData");
 
@@ -235,114 +302,85 @@ sub("MelonLoader/InternalUtils/UnityInformationHandler.cs",
                 {
                     Stream bundleStream = APKAssetManager.GetAssetStream(bundlePath);
                     instance = assetsManager.LoadAssetsFile(bundleStream, bundlePath, true);
-                }""",
-    """                string bundlePath = Path.Combine(gameDataPath, "globalgamemanagers");
-
-                if (APKAssetManager.DoesAssetExist(bundlePath))
-                {
-                    MelonLogger.MsgDirect("[trace] RGI opening globalgamemanagers"); MelonLogger.Flush();
-                    Stream ggmStream = APKAssetManager.GetAssetStream(bundlePath);
-                    instance = assetsManager.LoadAssetsFile(ggmStream, bundlePath, true);
-                    MelonLogger.MsgDirect("[trace] RGI globalgamemanagers loaded"); MelonLogger.Flush();
                 }
-                else
-                {
-                    bundlePath = Path.Combine(gameDataPath, "mainData");
-                    if (APKAssetManager.DoesAssetExist(bundlePath))
-                    {
-                        MelonLogger.MsgDirect("[trace] RGI opening mainData"); MelonLogger.Flush();
-                        Stream mainStream = APKAssetManager.GetAssetStream(bundlePath);
-                        instance = assetsManager.LoadAssetsFile(mainStream, bundlePath, true);
-                        MelonLogger.MsgDirect("[trace] RGI mainData loaded"); MelonLogger.Flush();
-                    }
-                    else
-                    {
-                        bundlePath = Path.Combine(gameDataPath, "data.unity3d");
-                        if (!APKAssetManager.DoesAssetExist(bundlePath))
-                        {
-                            MelonLogger.MsgDirect("[trace] RGI no usable asset file, giving up"); MelonLogger.Flush();
-                            return;
-                        }
 
-                        MelonLogger.MsgDirect("[trace] RGI opening data.unity3d"); MelonLogger.Flush();
-                        Stream bundleStream = APKAssetManager.GetAssetStream(bundlePath);
-                        BundleFileInstance bundleFile = assetsManager.LoadBundleFile(bundleStream, bundlePath);
-                        MelonLogger.MsgDirect("[trace] RGI bundle loaded"); MelonLogger.Flush();
-                        instance = assetsManager.LoadAssetsFileFromBundle(bundleFile, "globalgamemanagers");
-                        MelonLogger.MsgDirect("[trace] RGI bundle assets loaded"); MelonLogger.Flush();
-                    }
-                }""")
+                if (instance == null)
+                    return;
 
-sub("MelonLoader/InternalUtils/UnityInformationHandler.cs",
-    """                assetsManager.LoadIncludedClassPackage();""",
-    """                MelonLogger.MsgDirect("[trace] RGI LoadIncludedClassPackage begin"); MelonLogger.Flush();
                 assetsManager.LoadIncludedClassPackage();
-                MelonLogger.MsgDirect("[trace] RGI LoadIncludedClassPackage done"); MelonLogger.Flush();
+                if (!instance.file.Metadata.TypeTreeEnabled)
+                    assetsManager.LoadClassDatabaseFromPackage(instance.file.Metadata.UnityVersion);
 
-                MelonLogger.MsgDirect($"[trace] RGI typetree={instance.file.Metadata.TypeTreeEnabled} unity={instance.file.Metadata.UnityVersion}"); MelonLogger.Flush();
+                if (EngineVersion == UnityVersion.MinVersion)
+                    EngineVersion = TryParse(instance.file.Metadata.UnityVersion);
 
-                // PlayerSettings parsing needs the class database and is what killed the
-                // process on BTD6/Unity 6. Off by default; opt in with a touch file.
-                if (!File.Exists("/sdcard/Download/ml_full_unityinfo"))
-                {
-                    MelonLogger.MsgDirect("[trace] RGI playerSettings parsing disabled"); MelonLogger.Flush();
-                    if (EngineVersion == UnityVersion.MinVersion)
-                    {
-                        MelonLogger.MsgDirect("[trace] RGI reading version from header"); MelonLogger.Flush();
-                        EngineVersion = GetVersionFromGlobalGameManagers(APKAssetManager.GetAssetBytes(bundlePath));
-                    }
-                    MelonLogger.MsgDirect($"[trace] RGI engine version = {EngineVersion}"); MelonLogger.Flush();
-                    instance.file.Close();
-                    instance = null;
-                    return;
-                }
-                MelonLogger.MsgDirect("[trace] RGI playerSettings parsing enabled (opt-in)"); MelonLogger.Flush();""")
-
-sub("MelonLoader/InternalUtils/UnityInformationHandler.cs",
-    """                List<AssetFileInfo> assetFiles = instance.file.GetAssetsOfType(AssetClassID.PlayerSettings);""",
-    """                MelonLogger.MsgDirect("[trace] RGI GetAssetsOfType begin"); MelonLogger.Flush();
                 List<AssetFileInfo> assetFiles = instance.file.GetAssetsOfType(AssetClassID.PlayerSettings);
-                MelonLogger.MsgDirect($"[trace] RGI GetAssetsOfType done: {assetFiles.Count}"); MelonLogger.Flush();""")
-
-sub("MelonLoader/InternalUtils/UnityInformationHandler.cs",
-    """                    AssetTypeValueField playerSettings_baseField = assetsManager.GetBaseField(instance, playerSettings);""",
-    """                    MelonLogger.MsgDirect("[trace] RGI GetBaseField begin"); MelonLogger.Flush();
-                    AssetTypeValueField playerSettings_baseField = assetsManager.GetBaseField(instance, playerSettings);
-                    MelonLogger.MsgDirect("[trace] RGI GetBaseField done"); MelonLogger.Flush();""")
-
-sub("MelonLoader/InternalUtils/UnityInformationHandler.cs",
-    """            try
-            {
-                SetupInternal();
-            }""",
-    """            try
-            {
-                if (File.Exists("/sdcard/Download/ml_skip_unityinfo"))
+                if (assetFiles.Count > 0)
                 {
-                    MelonLogger.MsgDirect("[trace] unity info skipped by switch"); MelonLogger.Flush();
-                    GameDeveloper = DefaultInfo;
-                    GameName = DefaultInfo;
-                    GameVersion = DefaultInfo;
-                    return;
+                    AssetFileInfo playerSettings = assetFiles.First();
+
+                    AssetTypeValueField playerSettings_baseField = assetsManager.GetBaseField(instance, playerSettings);
+                    if (playerSettings_baseField != null)
+                    {
+                        AssetTypeValueField bundleVersion = playerSettings_baseField.Get("bundleVersion");
+                        if (bundleVersion != null)
+                            GameVersion = bundleVersion.AsString;
+
+                        AssetTypeValueField companyName = playerSettings_baseField.Get("companyName");
+                        if (companyName != null)
+                            GameDeveloper = companyName.AsString;
+
+                        AssetTypeValueField productName = playerSettings_baseField.Get("productName");
+                        if (productName != null)
+                            GameName = productName.AsString;
+                    }
                 }
-
-                SetupInternal();
-            }""")
-
-sub("MelonLoader/InternalUtils/UnityInformationHandler.cs",
-    """            catch (Exception ex)
+            }
+            catch (Exception ex)
             {
                 if (MelonDebug.IsEnabled())
                     MelonLogger.Error(ex);
             }
             if (instance != null)
-                instance.file.Close();""",
-    """            catch (Exception ex)
+                instance.file.Close();
+        }""",
+    """        private static void ReadGameInfo(AssetsManager assetsManager, string gameDataPath)
+        {
+            // Android fork: AssetsTools.NET deadlocks on Unity 6000 asset files read
+            // through APKAssetStream. We only need the engine version, which sits as a
+            // plain null-terminated string in the globalgamemanagers header.
+            string ggmPath = Path.Combine(gameDataPath, "globalgamemanagers");
+            try
+            {
+                if (!APKAssetManager.DoesAssetExist(ggmPath))
+                {
+                    MelonLogger.MsgDirect("[trace] RGI no globalgamemanagers, skipping"); MelonLogger.Flush();
+                    return;
+                }
+
+                byte[] ggm = APKAssetManager.GetAssetBytes(ggmPath);
+                MelonLogger.MsgDirect($"[trace] RGI globalgamemanagers bytes={ggm.Length}"); MelonLogger.Flush();
+
+                if (ggm == null || ggm.Length < 0x40)
+                    return;
+
+                UnityVersion parsed = GetVersionFromGlobalGameManagers(ggm);
+                MelonLogger.MsgDirect($"[trace] RGI parsed unity version '{parsed}'"); MelonLogger.Flush();
+
+                if (parsed != UnityVersion.MinVersion)
+                    EngineVersion = parsed;
+
+                GameName = BootstrapInterop.NativeGetPackageName();
+                if (string.IsNullOrEmpty(GameName))
+                    GameName = "UNKNOWN";
+                if (string.IsNullOrEmpty(GameDeveloper))
+                    GameDeveloper = "UNKNOWN";
+            }
+            catch (Exception ex)
             {
                 MelonLogger.MsgDirect($"[trace] RGI EXCEPTION: {ex.GetType().Name}: {ex.Message}"); MelonLogger.Flush();
                 MelonDebug.Msg(ex.ToString());
             }
-            if (instance != null)
-                instance.file.Close();""")
+        }""")
 
 print("all patches applied")

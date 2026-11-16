@@ -390,96 +390,184 @@ sub("External/Il2CppInterop/Il2CppInterop.Runtime/Injection/Hooks/MetadataCache_
             return IntPtr.Zero;
         }""")
 
-# Trace the delegate conversion: it is where the process currently dies, and a
-# native crash there leaves no managed stack trace behind.
+# Delegate conversion without il2cpp reflection: on Unity 6000 metadata
+# Il2CppSystem.Reflection.MethodInfo.GetParameters() dies with a native fault (no
+# managed exception), so the native Invoke metadata is read through the il2cpp C
+# API and the trampoline signature is keyed by the native method pointer.
 sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
     """        var il2CppDelegateType = Il2CppSystem.Type.internal_from_handle(IL2CPP.il2cpp_class_get_type(classTypePtr));
-        var nativeDelegateInvokeMethod = il2CppDelegateType.GetMethod("Invoke");""",
-    """        Logger.Instance.LogInformation("convert: {Type} class=0x{Class} native=0x{Native}",
-            typeof(TIl2Cpp).FullName, classTypePtr.ToInt64().ToString("X2"),
-            IL2CPP.il2cpp_class_get_type(classTypePtr).ToInt64().ToString("X2"));
-
-        var il2CppDelegateType = Il2CppSystem.Type.internal_from_handle(IL2CPP.il2cpp_class_get_type(classTypePtr));
         var nativeDelegateInvokeMethod = il2CppDelegateType.GetMethod("Invoke");
 
-        Logger.Instance.LogInformation("convert: {Type} Invoke method resolved", typeof(TIl2Cpp).FullName);""")
-
-sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
-    """        var nativeParameters = nativeDelegateInvokeMethod.GetParameters();
-        if (nativeParameters.Count != parameterInfos.Length)""",
-    """        Logger.Instance.LogInformation("convert: {Type} fetching native parameters", typeof(TIl2Cpp).FullName);
         var nativeParameters = nativeDelegateInvokeMethod.GetParameters();
-        Logger.Instance.LogInformation("convert: {Type} native parameters count={Count}",
-            typeof(TIl2Cpp).FullName, nativeParameters.Count);
-        if (nativeParameters.Count != parameterInfos.Length)""")
+        if (nativeParameters.Count != parameterInfos.Length)
+            throw new ArgumentException(
+                $"Managed delegate has {parameterInfos.Length} parameters, native has {nativeParameters.Count}, these should match");
 
-sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
-    """        for (var i = 0; i < nativeParameters.Count; i++)
+        for (var i = 0; i < nativeParameters.Count; i++)
         {
             var nativeType = nativeParameters[i].ParameterType;
             var managedType = parameterInfos[i].ParameterType;
 
-            if (nativeType.IsPrimitive || managedType.IsPrimitive)""",
-    """        for (var i = 0; i < nativeParameters.Count; i++)
-        {
-            Logger.Instance.LogInformation("convert: {Type} param {I} entry", typeof(TIl2Cpp).FullName, i);
-            var nativeType = nativeParameters[i].ParameterType;
-            Logger.Instance.LogInformation("convert: {Type} param {I} nativeType={N}",
-                typeof(TIl2Cpp).FullName, i, nativeType.FullName);
-            var managedType = parameterInfos[i].ParameterType;
-            Logger.Instance.LogInformation("convert: {Type} param {I} managedType={M} nativePrim={A} managedPrim={B}",
-                typeof(TIl2Cpp).FullName, i, managedType.FullName, nativeType.IsPrimitive, managedType.IsPrimitive);
+            if (nativeType.IsPrimitive || managedType.IsPrimitive)
+            {
+                if (nativeType.FullName != managedType.FullName)
+                    throw new ArgumentException(
+                        $"Parameter type mismatch at parameter {i}: {nativeType.FullName} != {managedType.FullName}");
 
-            if (nativeType.IsPrimitive || managedType.IsPrimitive)""")
+                continue;
+            }
 
-sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
-    """            var classPointerFromNativeType = IL2CPP.il2cpp_class_from_type(nativeType._impl.value);
-
-            if (classPointerFromManagedType != classPointerFromNativeType)""",
-    """            Logger.Instance.LogInformation("convert: {Type} param {I} managedClass=0x{Managed} nativeTypePtr=0x{NativeType}",
-                typeof(TIl2Cpp).FullName, i, classPointerFromManagedType.ToInt64().ToString("X2"),
-                nativeType._impl.value.ToInt64().ToString("X2"));
+            var classPointerFromManagedType = (IntPtr)typeof(Il2CppClassPointerStore<>).MakeGenericType(managedType)
+                .GetField(nameof(Il2CppClassPointerStore<int>.NativeClassPtr)).GetValue(null);
 
             var classPointerFromNativeType = IL2CPP.il2cpp_class_from_type(nativeType._impl.value);
 
-            Logger.Instance.LogInformation("convert: {Type} param {I} nativeClass=0x{Native}",
-                typeof(TIl2Cpp).FullName, i, classPointerFromNativeType.ToInt64().ToString("X2"));
+            if (classPointerFromManagedType != classPointerFromNativeType)
+                throw new ArgumentException(
+                    $"Parameter type at {i} has mismatched native type pointers; types: {nativeType.FullName} != {managedType.FullName}");
 
-            if (classPointerFromManagedType != classPointerFromNativeType)""")
+            if (nativeType.IsByRef || managedType.IsByRef)
+                throw new ArgumentException($"Parameter at {i} is passed by reference, this is not supported");
+        }
 
-sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
-    """        var signature = new MethodSignature(nativeDelegateInvokeMethod, true);
+        var signature = new MethodSignature(nativeDelegateInvokeMethod, true);
         var managedTrampoline =
             GetOrCreateNativeToManagedTrampoline(signature, nativeDelegateInvokeMethod, managedInvokeMethod);
 
         var methodInfo = UnityVersionHandler.NewMethod();
-        methodInfo.MethodPointer = Marshal.GetFunctionPointerForDelegate(managedTrampoline);""",
-    """        Logger.Instance.LogInformation("convert: {Type} building signature", typeof(TIl2Cpp).FullName);
-        var signature = new MethodSignature(nativeDelegateInvokeMethod, true);
-        Logger.Instance.LogInformation("convert: {Type} signature built", typeof(TIl2Cpp).FullName);
+        methodInfo.MethodPointer = Marshal.GetFunctionPointerForDelegate(managedTrampoline);
+        methodInfo.ParametersCount = (byte)parameterInfos.Length;
+        methodInfo.Slot = ushort.MaxValue;
+        methodInfo.IsMarshalledFromNative = true;
 
+        var delegateReference = new Il2CppToMonoDelegateReference(@delegate, methodInfo.Pointer);
+""",
+    """        Logger.Instance.LogInformation("convert: {Type} class=0x{Class} native=0x{Native}",
+            typeof(TIl2Cpp).FullName, classTypePtr.ToInt64().ToString("X2"),
+            IL2CPP.il2cpp_class_get_type(classTypePtr).ToInt64().ToString("X2"));
+
+        var nativeDelegateInvokeMethod = FindNativeInvokeMethod(classTypePtr, parameterInfos.Length);
+        Logger.Instance.LogInformation("convert: {Type} native Invoke method=0x{Method}",
+            typeof(TIl2Cpp).FullName, nativeDelegateInvokeMethod.ToInt64().ToString("X2"));
+        if (nativeDelegateInvokeMethod == IntPtr.Zero)
+            throw new ArgumentException(
+                $"Type {typeof(TIl2Cpp)} has no il2cpp Invoke method with {parameterInfos.Length} parameters");
+
+        var nativeParameterCount = (int)IL2CPP.il2cpp_method_get_param_count(nativeDelegateInvokeMethod);
+        Logger.Instance.LogInformation("convert: {Type} native parameters count={Count}",
+            typeof(TIl2Cpp).FullName, nativeParameterCount);
+        if (nativeParameterCount != parameterInfos.Length)
+            throw new ArgumentException(
+                $"Managed delegate has {parameterInfos.Length} parameters, native has {nativeParameterCount}, these should match");
+
+        for (var i = 0; i < nativeParameterCount; i++)
+        {
+            var managedType = parameterInfos[i].ParameterType;
+            if (managedType.IsByRef)
+                throw new ArgumentException($"Parameter at {i} is passed by reference, this is not supported");
+
+            var classPointerFromNativeType =
+                IL2CPP.il2cpp_class_from_type(IL2CPP.il2cpp_method_get_param(nativeDelegateInvokeMethod, (uint)i));
+            var classPointerFromManagedType = Il2CppClassPointerStore.GetNativeClassPointer(managedType);
+
+            Logger.Instance.LogInformation(
+                "convert: {Type} param {I} managed={M} managedClass=0x{MC} nativeClass=0x{NC}",
+                typeof(TIl2Cpp).FullName, i, managedType.FullName,
+                classPointerFromManagedType.ToInt64().ToString("X2"),
+                classPointerFromNativeType.ToInt64().ToString("X2"));
+
+            // Managed-only types (Scene, plain structs from the Unity assemblies)
+            // have no il2cpp class of their own; the trampoline keeps their layout.
+            if ((classPointerFromManagedType != IntPtr.Zero) &&
+                (classPointerFromManagedType != classPointerFromNativeType))
+                throw new ArgumentException(
+                    $"Parameter type at {i} has mismatched native type pointers; type: {managedType.FullName}");
+        }
+
+        Logger.Instance.LogInformation("convert: {Type} building signature", typeof(TIl2Cpp).FullName);
+        var signature = new MethodSignature(nativeDelegateInvokeMethod);
         Logger.Instance.LogInformation("convert: {Type} generating trampoline", typeof(TIl2Cpp).FullName);
         var managedTrampoline =
             GetOrCreateNativeToManagedTrampoline(signature, nativeDelegateInvokeMethod, managedInvokeMethod);
         Logger.Instance.LogInformation("convert: {Type} trampoline ready", typeof(TIl2Cpp).FullName);
 
-        Logger.Instance.LogInformation("convert: {Type} allocating method info", typeof(TIl2Cpp).FullName);
         var methodInfo = UnityVersionHandler.NewMethod();
-        Logger.Instance.LogInformation("convert: {Type} method info allocated", typeof(TIl2Cpp).FullName);
-        Logger.Instance.LogInformation("convert: {Type} getting function pointer", typeof(TIl2Cpp).FullName);
         methodInfo.MethodPointer = Marshal.GetFunctionPointerForDelegate(managedTrampoline);
-        Logger.Instance.LogInformation("convert: {Type} function pointer ready", typeof(TIl2Cpp).FullName);""")
+        methodInfo.ParametersCount = (byte)parameterInfos.Length;
+        methodInfo.Slot = ushort.MaxValue;
+        methodInfo.IsMarshalledFromNative = true;
 
-sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
-    """        var delegateReference = new Il2CppToMonoDelegateReference(@delegate, methodInfo.Pointer);""",
-    """        Logger.Instance.LogInformation("convert: {Type} instantiating native delegate", typeof(TIl2Cpp).FullName);
+        Logger.Instance.LogInformation("convert: {Type} instantiating native delegate", typeof(TIl2Cpp).FullName);
         var delegateReference = new Il2CppToMonoDelegateReference(@delegate, methodInfo.Pointer);
-        Logger.Instance.LogInformation("convert: {Type} native delegate reference created", typeof(TIl2Cpp).FullName);""")
+""")
 
+# The il2cpp MethodInfo object cannot be built from here without going through
+# the reflection code that crashes above, so the field is left at its default.
 sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
-    """        converted.method_ptr = methodInfo.MethodPointer;""",
+    """        converted.method_ptr = methodInfo.MethodPointer;
+        converted.method_info = nativeDelegateInvokeMethod; // todo: is this truly a good hack?""",
     """        Logger.Instance.LogInformation("convert: {Type} done", typeof(TIl2Cpp).FullName);
         converted.method_ptr = methodInfo.MethodPointer;""")
+
+# Native Invoke lookup (replaces il2cpp reflection) + pointer-keyed signatures.
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
+    """    internal class MethodSignature : IEquatable<MethodSignature>""",
+    """    private static IntPtr FindNativeInvokeMethod(IntPtr classPointer, int parameterCount)
+    {
+        var iterator = IntPtr.Zero;
+        while (true)
+        {
+            var method = IL2CPP.il2cpp_class_get_methods(classPointer, ref iterator);
+            if (method == IntPtr.Zero)
+                return IntPtr.Zero;
+
+            if (IL2CPP.il2cpp_method_get_name_(method) != "Invoke")
+                continue;
+
+            if ((int)IL2CPP.il2cpp_method_get_param_count(method) != parameterCount)
+                continue;
+
+            return method;
+        }
+    }
+
+    internal class MethodSignature : IEquatable<MethodSignature>""")
+
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
+    """        public MethodSignature(MethodInfo methodInfo, bool hasThis)""",
+    """        public MethodSignature(IntPtr nativeMethodInfo)
+        {
+            HasThis = true;
+            ConstructedFromNative = true;
+
+            var hashCode = new HashCode();
+            hashCode.Add(nativeMethodInfo.ToInt64());
+            hashCode.Add(unchecked((int)IL2CPP.il2cpp_method_get_param_count(nativeMethodInfo)));
+            _hashCode = hashCode.ToHashCode();
+        }
+
+        public MethodSignature(MethodInfo methodInfo, bool hasThis)""")
+
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
+    """    private static Delegate GetOrCreateNativeToManagedTrampoline(MethodSignature signature,
+        Il2CppSystem.Reflection.MethodInfo nativeMethod, MethodInfo managedMethod)""",
+    """    private static Delegate GetOrCreateNativeToManagedTrampoline(MethodSignature signature,
+        IntPtr nativeMethod, MethodInfo managedMethod)""")
+
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
+    """    private static Delegate GenerateNativeToManagedTrampoline(Il2CppSystem.Reflection.MethodInfo nativeMethod,
+        MethodInfo managedMethod, MethodSignature signature)""",
+    """    private static Delegate GenerateNativeToManagedTrampoline(IntPtr nativeMethod,
+        MethodInfo managedMethod, MethodSignature signature)""")
+
+# nativeMethod is only used as a cache key now; its parameters used to be pulled
+# through the crashing reflection call and were never used afterwards.
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
+    """        var managedParameters = managedMethod.GetParameters();
+        var nativeParameters = nativeMethod.GetParameters();
+        var parameterTypes""",
+    """        var managedParameters = managedMethod.GetParameters();
+        var parameterTypes""")
 
 # ------------------------------------------------------ APKAssetManager
 sub("MelonLoader/Utils/APKAssetManager.cs",

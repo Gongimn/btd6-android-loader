@@ -84,6 +84,11 @@ jobs:
             -p:OutputPath="$PWD/Output/Release/MelonLoader/Dependencies/SupportModules/" \
             -v m 2>&1 | tee /tmp/build-sup.log | grep -E "error|Build succeeded|Build FAILED" || tail -40 /tmp/build-sup.log
 
+      - name: Build patchgen
+        run: |
+          cd repo/tools/patchgen
+          dotnet build -c Release -v q 2>&1 | tail -5
+
       - name: Show output
         if: always()
         run: |
@@ -102,6 +107,12 @@ jobs:
           if [ -d ll/Output/Release/MelonLoader/net35 ]; then
             cp -r ll/Output/Release/MelonLoader/net35 pack/MelonLoader/net35
           fi
+          echo "=== generator before patch ==="
+          ls -la pack/MelonLoader/Dependencies/Il2CppAssemblyGenerator/Il2CppAssemblyGenerator.dll
+          GEN=pack/MelonLoader/Dependencies/Il2CppAssemblyGenerator/Il2CppAssemblyGenerator.dll
+          dotnet repo/tools/patchgen/bin/Release/net8.0/patchgen.dll \
+            "$GEN" MelonLoader.Il2CppAssemblyGenerator.Core TryDownloadPreGenerated
+          ls -la "$GEN"
           cd pack
           rm -f /tmp/melon_data.zip
           zip -qr /tmp/melon_data.zip *

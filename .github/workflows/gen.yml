@@ -103,7 +103,7 @@ jobs:
           set -o pipefail
           CLI=$(find interop -name "Il2CppInterop.CLI.dll" -not -path "*/obj/*" | head -1)
           echo "using $CLI"
-          dotnet "$CLI" \
+          dotnet "$CLI" generate \
             --input "$PWD/cpp2il_out" \
             --output "$PWD/interop_out" \
             --unity "$PWD/unitydeps" \

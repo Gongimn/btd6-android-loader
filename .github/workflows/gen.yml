@@ -95,12 +95,13 @@ jobs:
           git clone --depth 1 https://github.com/LemonLoader/Il2CppInterop.git interop
           cd interop
           dotnet build Il2CppInterop.CLI/Il2CppInterop.CLI.csproj -c Release -v m 2>&1 | tail -25
-          find . -name "Il2CppInterop.CLI.dll" -path "*Release*" | head
+          echo "=== cli dlls:"
+          find . -name "Il2CppInterop.CLI.dll" | head
 
       - name: Generate interop assemblies
         run: |
           set -o pipefail
-          CLI=$(find interop -name "Il2CppInterop.CLI.dll" -path "*/bin/Release/*" | head -1)
+          CLI=$(find interop -name "Il2CppInterop.CLI.dll" -not -path "*/obj/*" | head -1)
           echo "using $CLI"
           dotnet "$CLI" \
             --input "$PWD/cpp2il_out" \

@@ -260,6 +260,11 @@ sub("Dependencies/SupportModules/Component.cs",
             MelonLogger.MsgDirect("[trace] create: hideFlags set"); MelonLogger.Flush();
 
 #if SM_Il2Cpp
+            var meshFilterType = Il2CppType.Of<MeshFilter>();
+            MelonLogger.MsgDirect("[trace] create: adding a real MeshFilter"); MelonLogger.Flush();
+            var meshFilter = Main.obj.AddComponent(meshFilterType);
+            MelonLogger.MsgDirect("[trace] create: real MeshFilter added=" + (meshFilter != null)); MelonLogger.Flush();
+
             var componentType = Il2CppType.Of<SM_Component>();
             MelonLogger.MsgDirect("[trace] create: il2cpp type of SM_Component resolved"); MelonLogger.Flush();
             var added = Main.obj.AddComponent(componentType);
@@ -280,6 +285,33 @@ sub("Dependencies/SupportModules/Component.cs",
 sub("External/Il2CppInterop/Il2CppInterop.Runtime/Injection/ClassInjector.cs",
     "    public bool LogSuccess { get; init; } = true;",
     "    public bool LogSuccess { get; set; } = true;")
+
+# Log every resolved hook address: on Unity 6000 a scan can land on an unrelated
+# function and the detour then kills the process the first time it is called.
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/Injection/Hook.cs",
+    'Logger.Instance.LogTrace("{MethodName} found: 0x{MethodPtr}", TargetMethodName, methodPtr.ToInt64().ToString("X2"));',
+    'Logger.Instance.LogInformation("{MethodName} found: 0x{MethodPtr}", TargetMethodName, methodPtr.ToInt64().ToString("X2"));')
+
+# BepInEx/Il2CppInterop#284: the Class::GetDefaultFieldValue signature matches an
+# unrelated function on 6000.x metadata and the detour crashes on first use.
+# It only feeds default values of injected enums, so it can be skipped.
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/Injection/InjectorHelpers.cs",
+    """            GetTypeInfoFromTypeDefinitionIndexHook.ApplyHook();
+            GetFieldDefaultValueHook.ApplyHook();""",
+    """            GetTypeInfoFromTypeDefinitionIndexHook.ApplyHook();
+            Logger.Instance.LogInformation("Skipping the Class::GetDefaultFieldValue hook (unreliable on 6000.x)");""")
+
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/Injection/InjectorHelpers.cs",
+    """            nint pClassInit = GetClassInitSubstitute();
+
+            Logger.Instance.LogTrace("Class::Init: 0x{PClassInitAddress}", pClassInit.ToString("X2"));""",
+    """            nint pClassInit = GetClassInitSubstitute();
+
+            Logger.Instance.LogInformation("Class::Init: 0x{PClassInitAddress}", pClassInit.ToString("X2"));""")
+
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/Injection/InjectorHelpers.cs",
+    """                        Logger.Instance.LogTrace("Used BNM Method to find Class::Init.");""",
+    """                        Logger.Instance.LogInformation("Used BNM Method to find Class::Init.");""")
 
 # Injected classes are addressed with negative "type definition indexes" and that
 # only works when this function is hooked. On Unity 6000.3 the xref walk in the

@@ -1,0 +1,131 @@
+name: gen
+
+# Generates Il2Cpp interop assemblies for BTD6 with modern Cpp2IL/Il2CppInterop.
+# The bundled generator inside MelonLoader 0.6.5.1 ships Cpp2IL from 2024, which
+# cannot read Unity 6000.3 metadata (version 39), so we do the job on a runner.
+#
+# Inputs: release "gamefiles" with libil2cpp.so.xz + global-metadata.dat.xz
+# Output: artifact "il2cpp-assemblies" -> extract into MelonLoader/Il2CppAssemblies
+
+on:
+  workflow_dispatch:
+
+jobs:
+  gen:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout our repo
+        uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+          dotnet-quality: ga
+
+      - name: Fetch game files from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          mkdir -p files
+          REL="https://api.github.com/repos/${{ github.repository }}/releases/tags/gamefiles"
+          curl -s -H "Authorization: Bearer $GH_TOKEN" "$REL" -o rel.json
+          python3 - <<'PY'
+          import json, urllib.request, os
+          rel = json.load(open("rel.json"))
+          tok = os.environ["GH_TOKEN"]
+          for asset in rel.get("assets", []):
+              if not asset["name"].endswith(".xz"):
+                  continue
+              req = urllib.request.Request(asset["url"], headers={
+                  "Authorization": "Bearer " + tok,
+                  "Accept": "application/octet-stream",
+              })
+              data = urllib.request.urlopen(req).read()
+              open("files/" + asset["name"], "wb").write(data)
+              print(asset["name"], len(data))
+          PY
+          unxz -f files/*.xz
+          ls -la files
+
+      - name: Fetch Cpp2IL
+        run: |
+          set -e
+          curl -sSL -o cpp2il.pkg \
+            https://github.com/SamboyCoding/Cpp2IL/releases/download/2022.1.0-pre-release.21/Cpp2IL-2022.1.0-pre-release.21-Linux
+          mkdir -p cpp2il
+          if file cpp2il.pkg | grep -qi zip; then unzip -o -q cpp2il.pkg -d cpp2il; else cp cpp2il.pkg cpp2il/Cpp2IL; fi
+          chmod +x cpp2il/Cpp2IL
+          ls -la cpp2il | head
+
+      - name: Fetch Unity reference assemblies
+        run: |
+          set -e
+          curl -sSL -o unitydeps.zip \
+            https://github.com/LavaGang/MelonLoader.UnityDependencies/releases/download/6000.3.23/Managed.zip
+          mkdir -p unitydeps
+          unzip -q -o unitydeps.zip -d unitydeps
+          ls unitydeps | wc -l
+
+      - name: Run Cpp2IL
+        run: |
+          set -o pipefail
+          ./cpp2il/Cpp2IL \
+            --force-binary-path "$PWD/files/libil2cpp.so" \
+            --force-metadata-path "$PWD/files/global-metadata.dat" \
+            --force-unity-version 6000.3.23 \
+            --output-as dummydll \
+            --use-processor attributeinjector \
+            --output-to "$PWD/cpp2il_out" \
+            --low-memory-mode \
+            2>&1 | tee /tmp/cpp2il.log | tail -40
+          echo "=== produced:"
+          ls cpp2il_out | head -20
+          ls cpp2il_out | wc -l
+
+      - name: Build Il2CppInterop CLI
+        run: |
+          set -o pipefail
+          git clone --depth 1 https://github.com/LemonLoader/Il2CppInterop.git interop
+          cd interop
+          dotnet build Il2CppInterop.CLI/Il2CppInterop.CLI.csproj -c Release -v m 2>&1 | tail -25
+          find . -name "Il2CppInterop.CLI.dll" -path "*Release*" | head
+
+      - name: Generate interop assemblies
+        run: |
+          set -o pipefail
+          CLI=$(find interop -name "Il2CppInterop.CLI.dll" -path "*Release*" | head -1)
+          echo "using $CLI"
+          dotnet "$CLI" \
+            --input "$PWD/cpp2il_out" \
+            --output "$PWD/interop_out" \
+            --unity "$PWD/unitydeps" \
+            --game-assembly "$PWD/files/libil2cpp.so" \
+            --use-opt-out-prefixing 2>&1 | tee /tmp/interop.log | tail -30
+          echo "=== produced:"
+          ls interop_out | head -20
+          ls interop_out | wc -l
+
+      - name: Package
+        run: |
+          set -e
+          cd interop_out
+          zip -qr /tmp/il2cpp-assemblies.zip .
+          ls -la /tmp/il2cpp-assemblies.zip
+          unzip -l /tmp/il2cpp-assemblies.zip | tail -3
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: il2cpp-assemblies
+          path: |
+            /tmp/il2cpp-assemblies.zip
+            /tmp/cpp2il.log
+            /tmp/interop.log
+          if-no-files-found: warn

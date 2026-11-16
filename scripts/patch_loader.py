@@ -131,6 +131,7 @@ sub("MelonLoader/Core.cs",
         {
             try
             {
+                Environment.SetEnvironmentVariable("MELON_DEBUG_DIR", MelonEnvironment.MelonLoaderDirectory);
                 var log = Path.Combine(MelonEnvironment.MelonLoaderDirectory, "stdio.log");
                 int fd = open(log, 0x241, 0x1B6); // O_WRONLY | O_CREAT | O_TRUNC, 0666
                 if (fd < 0)
@@ -708,6 +709,44 @@ sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
         var delegateReference = new Il2CppToMonoDelegateReference(@delegate, methodInfo.Pointer);
 """)
 
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
+    "    private static void LogError(string message)",
+    """    private static readonly object TraceLock = new object();
+    private static int TraceCount;
+
+    // Every il2cpp -> managed delegate call lands here first. When the process dies
+    // on a null instruction pointer we need to know whether the fault is *inside*
+    // this trampoline or before it: a line here right before the crash means the
+    // call went through, silence means il2cpp jumped to a null pointer itself.
+    private static void TraceDelegateCall(string signature)
+    {
+        if (System.Threading.Interlocked.Increment(ref TraceCount) > 400)
+            return;
+
+        try
+        {
+            var dir = System.Environment.GetEnvironmentVariable("MELON_DEBUG_DIR");
+            if (string.IsNullOrEmpty(dir))
+                return;
+
+            lock (TraceLock)
+                System.IO.File.AppendAllText(System.IO.Path.Combine(dir, "delegates.log"),
+                    DateTime.Now.ToString("HH:mm:ss.fff") + " " + signature + "\\n");
+        }
+        catch { }
+    }
+
+    private static void LogError(string message)""")
+
+# Trace entry into the native-to-managed trampoline (see TraceDelegateCall).
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
+    "        var tryLabel = bodyBuilder.BeginExceptionBlock();",
+    """        bodyBuilder.Emit(OpCodes.Ldstr, ExtractSignature(managedMethod));
+        bodyBuilder.Emit(OpCodes.Call,
+            typeof(DelegateSupport).GetMethod(nameof(TraceDelegateCall), BindingFlags.Static | BindingFlags.NonPublic)!);
+
+        var tryLabel = bodyBuilder.BeginExceptionBlock();""")
+
 # il2cpp aborts the process when a delegate produced here is invoked from a Task
 # continuation while Delegate.method_info is null. Building the reflection object
 # through Il2CppSystem.Reflection crashes on 6000.x, but IL2CPP.il2cpp_method_get_object
@@ -728,7 +767,17 @@ sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
         Logger.Instance.LogInformation("convert: {Type} done", typeof(TIl2Cpp).FullName);
         converted.method_ptr = methodInfo.MethodPointer;
         if (nativeInvokeObject != IntPtr.Zero)
-            converted.method_info = new Il2CppSystem.Reflection.MethodInfo(nativeInvokeObject);""")
+            converted.method_info = new Il2CppSystem.Reflection.MethodInfo(nativeInvokeObject);
+
+        // A null field here is what turns the later call into a jump to address 0.
+        Logger.Instance.LogInformation(
+            "convert: {Type} pointers method_ptr=0x{P} invoke_impl=0x{I} method=0x{M} method_info=0x{MI} target=0x{T}",
+            typeof(TIl2Cpp).FullName,
+            converted.method_ptr.ToInt64().ToString("X2"),
+            converted.invoke_impl.ToInt64().ToString("X2"),
+            converted.method.ToInt64().ToString("X2"),
+            converted.method_info == null ? "null" : converted.method_info.Pointer.ToInt64().ToString("X2"),
+            converted.m_target == null ? "null" : converted.m_target.Pointer.ToInt64().ToString("X2"));""")
 
 # Native Invoke lookup (replaces il2cpp reflection) + pointer-keyed signatures.
 sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",

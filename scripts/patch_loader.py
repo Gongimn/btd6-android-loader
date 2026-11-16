@@ -199,6 +199,164 @@ sub("MelonLoader/SupportModule/SupportModule.cs",
             BaseDirectory = MelonEnvironment.SupportModuleDirectory;
             MelonLogger.MsgDirect($"[trace] SupportModule.Setup dir='{BaseDirectory}'"); MelonLogger.Flush();""")
 
+# ------------------------------------------------------- support module
+# The il2cpp support module (Il2Cpp.dll) is where the process dies on Unity 6000.3,
+# and the only diagnostics we get are whatever it prints, so trace every step.
+sub("Dependencies/SupportModules/Il2Cpp/Main.cs",
+    """            }).AddLogger(new InteropLogger())
+              .AddHarmonySupport();""",
+    """            }).AddLogger(new InteropLogger())
+              .AddHarmonySupport();
+
+            MelonLogger.MsgDirect("[trace] support: interop runtime created"); MelonLogger.Flush();""")
+
+sub("Dependencies/SupportModules/Il2Cpp/Main.cs",
+    """            SceneHandler.Init();
+
+            MonoEnumeratorWrapper.Register();
+
+            ClassInjector.RegisterTypeInIl2Cpp<SM_Component>();
+            SM_Component.Create();
+
+            Interop = new InteropInterface();
+            Interface.SetInteropSupportInterface(Interop);
+            runtime.Start();""",
+    """            SceneHandler.Init();
+            MelonLogger.MsgDirect("[trace] support: scene handler installed"); MelonLogger.Flush();
+
+            MonoEnumeratorWrapper.Register();
+            MelonLogger.MsgDirect("[trace] support: enumerator wrapper registered"); MelonLogger.Flush();
+
+            ClassInjector.RegisterTypeInIl2Cpp<SM_Component>();
+            MelonLogger.MsgDirect("[trace] support: SM_Component registered"); MelonLogger.Flush();
+            SM_Component.Create();
+            MelonLogger.MsgDirect("[trace] support: component created"); MelonLogger.Flush();
+
+            Interop = new InteropInterface();
+            Interface.SetInteropSupportInterface(Interop);
+            MelonLogger.MsgDirect("[trace] support: interop interface set"); MelonLogger.Flush();
+            runtime.Start();
+            MelonLogger.MsgDirect("[trace] support: runtime started"); MelonLogger.Flush();""")
+
+# --------------------------------------------------- Il2CppInterop (vendored)
+# RegisterTypeOptions.LogSuccess used to be a plain setter. MonoMod re-emits the
+# Harmony wrappers with a call to the plain accessor, so an `init` accessor makes
+# every patch below it fail with MissingMethodException.
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/Injection/ClassInjector.cs",
+    "    public bool LogSuccess { get; init; } = true;",
+    "    public bool LogSuccess { get; set; } = true;")
+
+# Injected classes are addressed with negative "type definition indexes" and that
+# only works when this function is hooked. On Unity 6000.3 the xref walk in the
+# finder no longer lands on it (il2cpp_image_get_class has an extra call), so
+# without the fallback below il2cpp dereferences a negative index and the process
+# dies right after the first injected type is registered.
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/Injection/Hooks/MetadataCache_GetTypeInfoFromTypeDefinitionIndex_Hook.cs",
+    """        public override IntPtr FindTargetMethod()
+        {
+            return FindGetTypeInfoFromTypeDefinitionIndex();
+        }""",
+    """        public override IntPtr FindTargetMethod()
+        {
+            IntPtr found = FindGetTypeInfoFromTypeDefinitionIndex();
+            if (found != IntPtr.Zero)
+                return found;
+
+            return ScanForTarget();
+        }
+
+        private static unsafe IntPtr ScanForTarget()
+        {
+            var module = InjectorHelpers.Il2CppModule;
+            if (module == null)
+                return IntPtr.Zero;
+
+            byte* imageBase = (byte*)module.BaseAddress;
+            int imageSize = module.ModuleMemorySize;
+            if (imageSize < 0x1000)
+                return IntPtr.Zero;
+
+            // ELF64 program headers tell us which parts of the image are executable.
+            if (*(uint*)imageBase != 0x464C457Fu)
+                return IntPtr.Zero;
+
+            ulong phoff = *(ulong*)(imageBase + 0x20);
+            ushort phentsize = *(ushort*)(imageBase + 0x36);
+            ushort phnum = *(ushort*)(imageBase + 0x38);
+
+            for (int i = 0; i < phnum; i++)
+            {
+                byte* ph = imageBase + phoff + (ulong)i * phentsize;
+                if (*(uint*)ph != 1u) // PT_LOAD
+                    continue;
+                if ((*(uint*)(ph + 4) & 1u) == 0) // PF_X
+                    continue;
+
+                ulong vaddr = *(ulong*)(ph + 0x10);
+                ulong filesz = *(ulong*)(ph + 0x20);
+                if (filesz == 0 || filesz > int.MaxValue)
+                    continue;
+
+                byte* segStart = imageBase + vaddr;
+                if ((byte*)module.BaseAddress + imageSize <= segStart)
+                    continue;
+
+                IntPtr hit = ScanSegment(segStart, (int)filesz);
+                if (hit != IntPtr.Zero)
+                    return hit;
+            }
+
+            return IntPtr.Zero;
+        }
+
+        private static unsafe IntPtr ScanSegment(byte* start, int length)
+        {
+            // MetadataCache::GetTypeInfoFromTypeDefinitionIndex starts with
+            //     if (index == -1) return ...;
+            //     Il2CppClass* klass = typeInfoCache[index];  // dmb ishld, fill under lock
+            // so look for `cmn w0, #1`, a conditional branch, the cached array load
+            // (indexed by w0, scaled by 8) and the load barrier right after it.
+            var span = new ReadOnlySpan<byte>(start, length);
+            var needle = BitConverter.GetBytes(0x3100041Fu); // cmn w0, #1
+            int offset = 0;
+            while (offset < length - 64)
+            {
+                int rel = span.Slice(offset).IndexOf(needle);
+                if (rel < 0)
+                    break;
+
+                int pos = offset + rel;
+                offset = pos + 1;
+                if ((pos & 3) != 0 || pos < 48)
+                    continue;
+
+                uint* words = (uint*)(start + pos);
+
+                if ((words[1] & 0xFF000010u) != 0x54000000u) // b.cond
+                    continue;
+                if ((words[5] & 0xFFE0FC00u) != 0xF860D800u) // ldr xN, [xM, ..., sxtw #3]
+                    continue;
+                if (((words[5] >> 16) & 0x1Fu) != 0u) // index register is w0
+                    continue;
+                if (words[6] != 0xD50339BFu) // dmb ishld
+                    continue;
+
+                for (int back = 5; back <= 9; back++)
+                {
+                    if ((words[-back] & 0xFF8003FFu) != 0xD10003FFu) // sub sp, sp, #imm
+                        continue;
+
+                    var candidate = (IntPtr)(start + pos - back * 4);
+                    Logger.Instance.LogInformation(
+                        "Found MetadataCache::GetTypeInfoFromTypeDefinitionIndex by signature at 0x{Addr}",
+                        candidate.ToInt64().ToString("X2"));
+                    return candidate;
+                }
+            }
+
+            return IntPtr.Zero;
+        }""")
+
 # ------------------------------------------------------ APKAssetManager
 sub("MelonLoader/Utils/APKAssetManager.cs",
     """        JObjectArray<JString> assets = JNI.CallObjectMethod<JObjectArray<JString>>(assetManager, JNI.GetMethodID(JNI.GetObjectClass(assetManager), "list", "(Ljava/lang/String;)[Ljava/lang/String;"), new JValue(pathString));

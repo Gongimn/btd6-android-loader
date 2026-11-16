@@ -107,6 +107,12 @@ jobs:
           if [ -d ll/Output/Release/MelonLoader/net35 ]; then
             cp -r ll/Output/Release/MelonLoader/net35 pack/MelonLoader/net35
           fi
+          if [ -f ll/Output/Release/MelonLoader/Dependencies/SupportModules/Il2Cpp.dll ]; then
+            echo "=== shipping rebuilt support modules"
+            cp -r ll/Output/Release/MelonLoader/Dependencies/SupportModules/. pack/MelonLoader/Dependencies/SupportModules/
+          else
+            echo "=== support module was not rebuilt, keeping stock"
+          fi
           echo "=== generator before patch ==="
           ls -la pack/MelonLoader/Dependencies/Il2CppAssemblyGenerator/Il2CppAssemblyGenerator.dll
           GEN=pack/MelonLoader/Dependencies/Il2CppAssemblyGenerator/Il2CppAssemblyGenerator.dll

@@ -405,6 +405,72 @@ sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
         Logger.Instance.LogInformation("convert: {Type} Invoke method resolved", typeof(TIl2Cpp).FullName);""")
 
 sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
+    """        var nativeParameters = nativeDelegateInvokeMethod.GetParameters();
+        if (nativeParameters.Count != parameterInfos.Length)""",
+    """        Logger.Instance.LogInformation("convert: {Type} fetching native parameters", typeof(TIl2Cpp).FullName);
+        var nativeParameters = nativeDelegateInvokeMethod.GetParameters();
+        Logger.Instance.LogInformation("convert: {Type} native parameters count={Count}",
+            typeof(TIl2Cpp).FullName, nativeParameters.Count);
+        if (nativeParameters.Count != parameterInfos.Length)""")
+
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
+    """        for (var i = 0; i < nativeParameters.Count; i++)
+        {
+            var nativeType = nativeParameters[i].ParameterType;
+            var managedType = parameterInfos[i].ParameterType;
+
+            if (nativeType.IsPrimitive || managedType.IsPrimitive)""",
+    """        for (var i = 0; i < nativeParameters.Count; i++)
+        {
+            Logger.Instance.LogInformation("convert: {Type} param {I} entry", typeof(TIl2Cpp).FullName, i);
+            var nativeType = nativeParameters[i].ParameterType;
+            Logger.Instance.LogInformation("convert: {Type} param {I} nativeType={N}",
+                typeof(TIl2Cpp).FullName, i, nativeType.FullName);
+            var managedType = parameterInfos[i].ParameterType;
+            Logger.Instance.LogInformation("convert: {Type} param {I} managedType={M} nativePrim={A} managedPrim={B}",
+                typeof(TIl2Cpp).FullName, i, managedType.FullName, nativeType.IsPrimitive, managedType.IsPrimitive);
+
+            if (nativeType.IsPrimitive || managedType.IsPrimitive)""")
+
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
+    """            var classPointerFromNativeType = IL2CPP.il2cpp_class_from_type(nativeType._impl.value);
+
+            if (classPointerFromManagedType != classPointerFromNativeType)""",
+    """            Logger.Instance.LogInformation("convert: {Type} param {I} managedClass=0x{Managed} nativeTypePtr=0x{NativeType}",
+                typeof(TIl2Cpp).FullName, i, classPointerFromManagedType.ToInt64().ToString("X2"),
+                nativeType._impl.value.ToInt64().ToString("X2"));
+
+            var classPointerFromNativeType = IL2CPP.il2cpp_class_from_type(nativeType._impl.value);
+
+            Logger.Instance.LogInformation("convert: {Type} param {I} nativeClass=0x{Native}",
+                typeof(TIl2Cpp).FullName, i, classPointerFromNativeType.ToInt64().ToString("X2"));
+
+            if (classPointerFromManagedType != classPointerFromNativeType)""")
+
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
+    """        var signature = new MethodSignature(nativeDelegateInvokeMethod, true);
+        var managedTrampoline =
+            GetOrCreateNativeToManagedTrampoline(signature, nativeDelegateInvokeMethod, managedInvokeMethod);
+
+        var methodInfo = UnityVersionHandler.NewMethod();
+        methodInfo.MethodPointer = Marshal.GetFunctionPointerForDelegate(managedTrampoline);""",
+    """        Logger.Instance.LogInformation("convert: {Type} building signature", typeof(TIl2Cpp).FullName);
+        var signature = new MethodSignature(nativeDelegateInvokeMethod, true);
+        Logger.Instance.LogInformation("convert: {Type} signature built", typeof(TIl2Cpp).FullName);
+
+        Logger.Instance.LogInformation("convert: {Type} generating trampoline", typeof(TIl2Cpp).FullName);
+        var managedTrampoline =
+            GetOrCreateNativeToManagedTrampoline(signature, nativeDelegateInvokeMethod, managedInvokeMethod);
+        Logger.Instance.LogInformation("convert: {Type} trampoline ready", typeof(TIl2Cpp).FullName);
+
+        Logger.Instance.LogInformation("convert: {Type} allocating method info", typeof(TIl2Cpp).FullName);
+        var methodInfo = UnityVersionHandler.NewMethod();
+        Logger.Instance.LogInformation("convert: {Type} method info allocated", typeof(TIl2Cpp).FullName);
+        Logger.Instance.LogInformation("convert: {Type} getting function pointer", typeof(TIl2Cpp).FullName);
+        methodInfo.MethodPointer = Marshal.GetFunctionPointerForDelegate(managedTrampoline);
+        Logger.Instance.LogInformation("convert: {Type} function pointer ready", typeof(TIl2Cpp).FullName);""")
+
+sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
     """        var delegateReference = new Il2CppToMonoDelegateReference(@delegate, methodInfo.Pointer);""",
     """        Logger.Instance.LogInformation("convert: {Type} instantiating native delegate", typeof(TIl2Cpp).FullName);
         var delegateReference = new Il2CppToMonoDelegateReference(@delegate, methodInfo.Pointer);

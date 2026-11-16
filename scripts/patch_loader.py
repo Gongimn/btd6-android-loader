@@ -238,6 +238,41 @@ sub("Dependencies/SupportModules/Il2Cpp/Main.cs",
             runtime.Start();
             MelonLogger.MsgDirect("[trace] support: runtime started"); MelonLogger.Flush();""")
 
+# SM_Component.Create() is the next native fault; find out which step dies.
+sub("Dependencies/SupportModules/Component.cs",
+    """            Main.obj = new GameObject();
+            DontDestroyOnLoad(Main.obj);
+            Main.obj.hideFlags = HideFlags.DontSave;
+
+#if SM_Il2Cpp
+            Main.component = Main.obj.AddComponent(Il2CppType.Of<SM_Component>()).TryCast<SM_Component>();
+#else
+            Main.component = (SM_Component)Main.obj.AddComponent(typeof(SM_Component));
+#endif
+
+            Main.component.SiblingFix();""",
+    """            MelonLogger.MsgDirect("[trace] create: new GameObject begin"); MelonLogger.Flush();
+            Main.obj = new GameObject();
+            MelonLogger.MsgDirect("[trace] create: GameObject made"); MelonLogger.Flush();
+            DontDestroyOnLoad(Main.obj);
+            MelonLogger.MsgDirect("[trace] create: DontDestroyOnLoad done"); MelonLogger.Flush();
+            Main.obj.hideFlags = HideFlags.DontSave;
+            MelonLogger.MsgDirect("[trace] create: hideFlags set"); MelonLogger.Flush();
+
+#if SM_Il2Cpp
+            var componentType = Il2CppType.Of<SM_Component>();
+            MelonLogger.MsgDirect("[trace] create: il2cpp type of SM_Component resolved"); MelonLogger.Flush();
+            var added = Main.obj.AddComponent(componentType);
+            MelonLogger.MsgDirect("[trace] create: AddComponent returned"); MelonLogger.Flush();
+            Main.component = added.TryCast<SM_Component>();
+#else
+            Main.component = (SM_Component)Main.obj.AddComponent(typeof(SM_Component));
+#endif
+            MelonLogger.MsgDirect("[trace] create: component set"); MelonLogger.Flush();
+
+            Main.component.SiblingFix();
+            MelonLogger.MsgDirect("[trace] create: SiblingFix done"); MelonLogger.Flush();""")
+
 # --------------------------------------------------- Il2CppInterop (vendored)
 # RegisterTypeOptions.LogSuccess used to be a plain setter. MonoMod re-emits the
 # Harmony wrappers with a call to the plain accessor, so an `init` accessor makes

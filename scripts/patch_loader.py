@@ -109,6 +109,93 @@ sub("MelonLoader/Core.cs",
     """            PatchShield.Install();
             MelonLogger.MsgDirect("[trace] patch shield done"); MelonLogger.Flush();""")
 
+# Android ships no /etc/ssl/certs, so the OpenSSL inside this process starts with
+# zero trust anchors and every HTTPS request from a mod dies with
+# UntrustedRoot/PartialChain. Feed it the system CA store early, before any TLS.
+sub("MelonLoader/Core.cs",
+    "using System.Text;",
+    """using System.Text;
+using System.Security.Cryptography.X509Certificates;""")
+
+sub("MelonLoader/Core.cs",
+    '            MelonLogger.Msg("Initialized JNI");',
+    """            MelonLogger.Msg("Initialized JNI");
+            InstallAndroidTrustStore();""")
+
+sub("MelonLoader/Core.cs",
+    "        private static void AddUnityDebugLog()",
+    '''        private static void InstallAndroidTrustStore()
+        {
+            try
+            {
+                var dirs = new[]
+                {
+                    "/apex/com.android.conscrypt/cacerts",
+                    "/system/etc/security/cacerts",
+                    "/system/etc/security/cacerts_google",
+                    "/product/etc/security/cacerts",
+                    "/vendor/etc/security/cacerts"
+                };
+                var builder = new StringBuilder();
+                var files = 0;
+                foreach (var dir in dirs)
+                {
+                    if (!Directory.Exists(dir))
+                        continue;
+                    foreach (var file in Directory.GetFiles(dir))
+                    {
+                        try
+                        {
+                            var text = File.ReadAllText(file);
+                            if (!text.Contains("BEGIN CERTIFICATE"))
+                                continue;
+                            builder.Append(text.TrimEnd()).Append('\\n');
+                            files++;
+                        }
+                        catch { }
+                    }
+                }
+
+                MelonLogger.MsgDirect("[trace] trust store: " + files + " ca files found");
+                MelonLogger.Flush();
+                if (files == 0)
+                    return;
+
+                var bundle = Path.Combine(MelonEnvironment.MelonLoaderDirectory, "cacerts.pem");
+                File.WriteAllText(bundle, builder.ToString());
+                Environment.SetEnvironmentVariable("SSL_CERT_FILE", bundle);
+                Environment.SetEnvironmentVariable("SSL_CERT_DIR", "/system/etc/security/cacerts");
+
+                var collection = new X509Certificate2Collection();
+                collection.ImportFromPem(builder.ToString());
+                var added = 0;
+                using (var store = new X509Store(StoreName.Root, StoreLocation.CurrentUser))
+                {
+                    store.Open(OpenFlags.ReadWrite);
+                    foreach (var cert in collection)
+                    {
+                        try
+                        {
+                            store.Add(cert);
+                            added++;
+                        }
+                        catch { }
+                    }
+                    store.Close();
+                }
+
+                MelonLogger.MsgDirect("[trace] trust store: " + added + " certificates trusted");
+                MelonLogger.Flush();
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning("[trace] trust store failed: " + ex.Message);
+                MelonLogger.Flush();
+            }
+        }
+
+        private static void AddUnityDebugLog()''')
+
 sub("MelonLoader/Core.cs",
     "            MelonPreferences.Load();",
     """            MelonPreferences.Load();

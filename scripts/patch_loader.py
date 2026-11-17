@@ -447,6 +447,30 @@ sub("External/Il2CppInterop/Il2CppInterop.HarmonySupport/Il2CppDetourMethodPatch
 
         bool needsBoxing = false;""")
 
+# A struct without an explicit layout cannot appear in a native signature, and
+# treating the register it arrives in as a pointer corrupts memory, so such a
+# patch is refused: Harmony logs the failure and the game keeps the method.
+sub("External/Il2CppInterop/Il2CppInterop.HarmonySupport/Il2CppDetourMethodPatcher.cs",
+    """    private DynamicMethodDefinition GenerateNativeToManagedTrampoline(MethodInfo targetManagedMethodInfo)
+    {
+        // managedParams are the interop types used on the managed side""",
+    """    private DynamicMethodDefinition GenerateNativeToManagedTrampoline(MethodInfo targetManagedMethodInfo)
+    {
+        foreach (var checkedParam in Original.GetParameters())
+        {
+            var checkedType = checkedParam.ParameterType;
+            if (!checkedType.IsSubclassOf(typeof(ValueType)))
+                continue;
+            if (checkedType.IsEnum || checkedType.IsLayoutSequential || checkedType.IsExplicitLayout)
+                continue;
+
+            throw new NotSupportedException(
+                $"cannot marshal parameter '{checkedParam.Name}' of {Original.DeclaringType}::{Original.Name}: " +
+                $"{checkedType} is passed by value but has no explicit layout");
+        }
+
+        // managedParams are the interop types used on the managed side""")
+
 # A patched method whose parameter is a struct goes through il2cpp_value_box in
 # the generated trampoline, and on arm64 a small struct arrives in registers
 # instead of a pointer, so boxing reads a bogus address. Print the signature of

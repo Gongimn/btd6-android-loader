@@ -301,7 +301,8 @@ sub("MelonLoader/Core.cs",
     '            MelonLogger.Msg("Initialized JNI");',
     """            MelonLogger.Msg("Initialized JNI");
             InstallAndroidTrustStore();
-            AcceptAllServerCertificates();""")
+            AcceptAllServerCertificates();
+            MelonEvents.OnApplicationStart.Subscribe(RelaxCertificateChains);""")
 
 sub("MelonLoader/Core.cs",
     "        private static void AddUnityDebugLog()",
@@ -394,7 +395,6 @@ sub("MelonLoader/Core.cs",
                 ReportCertificateSupport(collection);
                 MelonLogger.Flush();
                 DumpTrustStore();
-                TlsSelfTest();
                 var added = 0;
                 using (var store = new X509Store(StoreName.Root, StoreLocation.CurrentUser))
                 {
@@ -583,6 +583,76 @@ sub("MelonLoader/Core.cs",
                 MelonLogger.Warning("[trace] tls self-test could not start: " + ex.Message);
                 MelonLogger.Flush();
             }
+        }
+
+        // The runtime's OpenSSL store has no roots on Android, so chain building always
+        // fails. Harmony is already loaded by now: force every X509Chain.Build to pass.
+        private static void RelaxCertificateChains()
+        {
+            try
+            {
+                System.Reflection.Assembly harmonyAssembly = null;
+                foreach (var candidate in AppDomain.CurrentDomain.GetAssemblies())
+                    if (candidate.GetName().Name == "0Harmony")
+                        harmonyAssembly = candidate;
+                if (harmonyAssembly == null)
+                {
+                    try { harmonyAssembly = System.Reflection.Assembly.Load("0Harmony"); } catch { }
+                }
+                if (harmonyAssembly == null)
+                {
+                    MelonLogger.MsgDirect("[trace] cert chain patch: 0Harmony not loaded");
+                    MelonLogger.Flush();
+                    TlsSelfTest();
+                    return;
+                }
+
+                var harmonyType = harmonyAssembly.GetType("HarmonyLib.Harmony");
+                var harmonyMethodType = harmonyAssembly.GetType("HarmonyLib.HarmonyMethod");
+                var harmony = Activator.CreateInstance(harmonyType, new object[] { "margycode.tls" });
+                var prefixInfo = typeof(MelonLoader.Core).GetMethod("ChainBuildPrefix",
+                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+                var prefix = Activator.CreateInstance(harmonyMethodType, new object[] { prefixInfo });
+                var patch = harmonyType.GetMethod("Patch", new[]
+                {
+                    typeof(System.Reflection.MethodBase), harmonyMethodType, harmonyMethodType, harmonyMethodType, harmonyMethodType
+                });
+
+                var patched = 0;
+                var failures = "";
+                foreach (var method in typeof(X509Chain).GetMethods(
+                             System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+                {
+                    if (method.Name != "Build" || method.ReturnType != typeof(bool))
+                        continue;
+                    try
+                    {
+                        patch.Invoke(harmony, new object[] { method, prefix, null, null, null });
+                        patched++;
+                    }
+                    catch (Exception ex)
+                    {
+                        var inner = ex.InnerException != null ? ex.InnerException.Message : ex.Message;
+                        failures += method + ": " + inner + " | ";
+                    }
+                }
+
+                MelonLogger.MsgDirect("[trace] cert chain patches: " + patched + " " + failures);
+                MelonLogger.Flush();
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning("[trace] cert chain patch failed: " + ex.Message);
+                MelonLogger.Flush();
+            }
+
+            TlsSelfTest();
+        }
+
+        private static bool ChainBuildPrefix(ref bool __result)
+        {
+            __result = true;
+            return false;
         }
 
         // Mono validates TLS through its own (empty) trust store, so every mod request

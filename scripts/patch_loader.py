@@ -556,6 +556,37 @@ sub("External/Il2CppInterop/Il2CppInterop.HarmonySupport/Il2CppDetourMethodPatch
 
         bool needsBoxing = false;""")
 
+# Debug hatch: "Type::Method" lines in nodetour.txt next to the loader logs disable those
+# detours, so a suspicious patch can be bisected on the device without a rebuild.
+sub("External/Il2CppInterop/Il2CppInterop.HarmonySupport/Il2CppDetourMethodPatcher.cs",
+    """    private static readonly List<object> DelegateCache = new();""",
+    """    private static readonly HashSet<string> DetourBlacklist = LoadDetourBlacklist();
+
+    private static HashSet<string> LoadDetourBlacklist()
+    {
+        var entries = new HashSet<string>();
+        try
+        {
+            var folder = Environment.GetEnvironmentVariable("MELON_DEBUG_DIR");
+            if (string.IsNullOrEmpty(folder))
+                return entries;
+            var path = System.IO.Path.Combine(folder, "nodetour.txt");
+            if (!System.IO.File.Exists(path))
+                return entries;
+            foreach (var line in System.IO.File.ReadAllLines(path))
+            {
+                var trimmed = line.Trim();
+                if (trimmed.Length > 0 && !trimmed.StartsWith("#"))
+                    entries.Add(trimmed);
+            }
+            Logger.Instance.LogWarning("detour: {Count} entries disabled through nodetour.txt", entries.Count);
+        }
+        catch { }
+        return entries;
+    }
+
+    private static readonly List<object> DelegateCache = new();""")
+
 # A method with no native body (abstract, or a virtual slot Unity 6 only fills in the
 # vtable) cannot be detoured: the detour would be installed at address 0 and the first
 # call jumps through a null pointer. Refuse it and let Harmony use the IL handler.
@@ -569,8 +600,15 @@ sub("External/Il2CppInterop/Il2CppInterop.HarmonySupport/Il2CppDetourMethodPatch
 
             if (originalNativeMethodInfo.MethodPointer == IntPtr.Zero)
                 throw new NotSupportedException(
-                    $"no native body for {Original.DeclaringType}::{Original.Name}, cannot detour");""")
+                    $"no native body for {Original.DeclaringType}::{Original.Name}, cannot detour");
 
+            // Debug hatch: nodetour.txt next to the logs lists "Type::Method" entries
+            // whose detour must be skipped, so a suspicious patch can be bisected on the
+            // device without a rebuild.
+            if (DetourBlacklist.Contains(Original.DeclaringType?.FullName + "::" + Original.Name))
+                throw new NotSupportedException(
+                    $"detour disabled by nodetour.txt for {Original.DeclaringType}::{Original.Name}");""")
+    
 # A struct without an explicit layout cannot appear in a native signature, and
 # treating the register it arrives in as a pointer corrupts memory, so such a
 # patch is refused: Harmony logs the failure and the game keeps the method.

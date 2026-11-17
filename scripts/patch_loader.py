@@ -150,8 +150,8 @@ sub("MelonLoader/Core.cs",
         [DllImport("libc", SetLastError = true)]
         private static extern int sigaction(int signum, IntPtr act, IntPtr oldact);
 
-        [DllImport("libc", SetLastError = true, CharSet = CharSet.Ansi)]
-        private static extern int open(string path, int flags, int mode);
+        [DllImport("libc", SetLastError = true, EntryPoint = "open", CharSet = CharSet.Ansi)]
+        private static extern int openCrashLog(string path, int flags, int mode);
 
         [DllImport("libc", SetLastError = true)]
         private static extern IntPtr write(int fd, IntPtr buffer, IntPtr count);
@@ -184,7 +184,7 @@ sub("MelonLoader/Core.cs",
                 if (string.IsNullOrEmpty(folder))
                     folder = MelonEnvironment.MelonLoaderDirectory;
 
-                crashFd = open(Path.Combine(folder, "native-crash.log"), 0x441, 0x1A4); // O_WRONLY|O_CREAT|O_APPEND, 0644
+                crashFd = openCrashLog(Path.Combine(folder, "native-crash.log"), 0x441, 0x1A4); // O_WRONLY|O_CREAT|O_APPEND, 0644
 
                 // Library mappings do not move once the game is up, so keep them from
                 // install time instead of touching the heap while crashing.

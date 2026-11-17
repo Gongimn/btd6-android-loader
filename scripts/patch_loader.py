@@ -306,9 +306,12 @@ sub("MelonLoader/Core.cs",
 
 sub("MelonLoader/Core.cs",
     "        private static void AddUnityDebugLog()",
-    '''        private static void InstallAndroidTrustStore()
+    '''        private static bool certificateChainsRelaxed;
+
+        private static void InstallAndroidTrustStore()
         {
             PrepareCertificateHome();
+            RelaxCertificateChains();
             try
             {
                 var dirs = new[]
@@ -589,6 +592,9 @@ sub("MelonLoader/Core.cs",
         // fails. Harmony is already loaded by now: force every X509Chain.Build to pass.
         private static void RelaxCertificateChains()
         {
+            if (certificateChainsRelaxed)
+                return;
+
             try
             {
                 System.Reflection.Assembly harmonyAssembly = null;
@@ -603,7 +609,6 @@ sub("MelonLoader/Core.cs",
                 {
                     MelonLogger.MsgDirect("[trace] cert chain patch: 0Harmony not loaded");
                     MelonLogger.Flush();
-                    TlsSelfTest();
                     return;
                 }
 
@@ -637,6 +642,8 @@ sub("MelonLoader/Core.cs",
                     }
                 }
 
+                if (patched > 0)
+                    certificateChainsRelaxed = true;
                 MelonLogger.MsgDirect("[trace] cert chain patches: " + patched + " " + failures);
                 MelonLogger.Flush();
             }

@@ -150,71 +150,99 @@ sub("MelonLoader/Core.cs",
         [DllImport("libc", SetLastError = true)]
         private static extern int sigaction(int signum, IntPtr act, IntPtr oldact);
 
+        [DllImport("libc", SetLastError = true, CharSet = CharSet.Ansi)]
+        private static extern int open(string path, int flags, int mode);
+
+        [DllImport("libc", SetLastError = true)]
+        private static extern IntPtr write(int fd, IntPtr buffer, IntPtr count);
+
         [DllImport("libc", SetLastError = true)]
         private static extern void _exit(int status);
 
-        // The process dies on a jump to a null pointer and Android keeps neither the
-        // message nor a tombstone, so take the faulting frame and walk the frame
-        // pointer chain ourselves and keep /proc/self/maps next to it to resolve the
-        // addresses afterwards.
+        private static int crashFd = -1;
+        private static IntPtr previousHandler = IntPtr.Zero;
+        private static int previousFlags;
+        private static IntPtr crashMarker;
+
+        // Mono turns a SIGSEGV into a managed NullReferenceException on arm64, so its
+        // handler cannot simply be replaced: doing that kills the process while it is
+        // still starting. Take SIGSEGV over only to scribble the faulting register block
+        // into a file when pc is null (a jump through a null function pointer), then
+        // hand the signal back to whoever handled it before us. Everything in the
+        // handler must avoid allocations and file APIs: it runs on the crashing thread
+        // inside a signal, so only raw reads and write(2) are safe there.
         private static void InstallFatalSignalHandler()
         {
             try
             {
                 ourFatalHandler = OnFatalSignal;
                 IntPtr nativeHandler = Marshal.GetFunctionPointerForDelegate(ourFatalHandler);
-                IntPtr block = Marshal.AllocHGlobal(64);
-                for (int i = 0; i < 64; i++)
+                crashMarker = Marshal.AllocHGlobal(8);
+                Marshal.Copy(new byte[] { 0x2d, 0x73, 0x69, 0x67, 0x2d, 0x0a, 0x2d, 0x0a }, 0, crashMarker, 8);
+
+                var folder = Environment.GetEnvironmentVariable("MELON_DEBUG_DIR");
+                if (string.IsNullOrEmpty(folder))
+                    folder = MelonEnvironment.MelonLoaderDirectory;
+
+                crashFd = open(Path.Combine(folder, "native-crash.log"), 0x441, 0x1A4); // O_WRONLY|O_CREAT|O_APPEND, 0644
+
+                // Library mappings do not move once the game is up, so keep them from
+                // install time instead of touching the heap while crashing.
+                try
+                {
+                    File.WriteAllLines(Path.Combine(folder, "native-maps.log"), File.ReadAllLines("/proc/self/maps"));
+                }
+                catch { }
+
+                IntPtr block = Marshal.AllocHGlobal(256);
+                IntPtr previous = Marshal.AllocHGlobal(256);
+                for (int i = 0; i < 256; i++)
+                {
                     Marshal.WriteByte(block, i, 0);
+                    Marshal.WriteByte(previous, i, 0);
+                }
                 Marshal.WriteIntPtr(block, 0, nativeHandler);
                 Marshal.WriteInt32(block, 16, 0x00000004); // SA_SIGINFO
 
-                foreach (var fatalSignal in new[] { 4, 6, 7, 11 })
-                    sigaction(fatalSignal, block, IntPtr.Zero);
+                int rc = sigaction(11, block, previous);
+                previousHandler = Marshal.ReadIntPtr(previous, 0);
+                previousFlags = Marshal.ReadInt32(previous, 16);
+                Console.WriteLine($"[trace] SIGSEGV handler rc={rc} fd={crashFd} previous=0x{previousHandler.ToInt64():X} flags=0x{previousFlags:X}");
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[trace] SIGSEGV handler install failed: " + ex.Message);
+            }
         }
 
         private static void OnFatalSignal(int signal, IntPtr info, IntPtr context)
         {
             try
             {
-                var folder = Environment.GetEnvironmentVariable("MELON_DEBUG_DIR");
-                var report = new StringBuilder();
-                report.AppendLine("SIGNAL " + signal);
-
-                long faultAddress = 0;
-                if (info != IntPtr.Zero)
-                    faultAddress = Marshal.ReadInt64(info, 16); // siginfo_t: si_addr
-
-                long pc = 0, sp = 0, fp = 0;
-                if (context != IntPtr.Zero)
+                // ucontext_t on arm64/bionic: uc_mcontext starts at +48 and holds a
+                // sigcontext: fault_address, regs[31] (x29 at +288, x30 at +296),
+                // sp at +304, pc at +312.
+                long pc = context == IntPtr.Zero ? -1 : Marshal.ReadInt64((IntPtr)(context.ToInt64() + 312));
+                if (pc == 0 && crashFd >= 0)
                 {
-                    long mcontext = context.ToInt64() + 48; // uc_mcontext on arm64
-                    fp = Marshal.ReadInt64((IntPtr)(mcontext + 240)); // regs[29]
-                    sp = Marshal.ReadInt64((IntPtr)(mcontext + 256));
-                    pc = Marshal.ReadInt64((IntPtr)(mcontext + 264));
+                    write(crashFd, crashMarker, (IntPtr)8);
+                    write(crashFd, context, (IntPtr)512);
+                    if (info != IntPtr.Zero)
+                        write(crashFd, info, (IntPtr)128);
+                    write(crashFd, crashMarker, (IntPtr)8);
                 }
+            }
+            catch { }
 
-                report.AppendLine("si_addr=0x" + faultAddress.ToString("X"));
-                report.AppendLine("pc=0x" + pc.ToString("X") + " sp=0x" + sp.ToString("X") + " fp=0x" + fp.ToString("X"));
-
-                var frame = fp;
-                for (int depth = 0; depth < 48 && frame > 0x1000; depth++)
+            // Hand the signal on to the previous handler, so null references and normal
+            // single faults keep behaving exactly as they did before.
+            try
+            {
+                if (previousHandler != IntPtr.Zero && previousHandler != (IntPtr)1)
                 {
-                    var next = Marshal.ReadInt64((IntPtr)frame);
-                    var saved = Marshal.ReadInt64((IntPtr)(frame + 8));
-                    report.AppendLine("#" + depth + " 0x" + saved.ToString("X"));
-                    if (next <= frame)
-                        break;
-                    frame = next;
-                }
-
-                if (!string.IsNullOrEmpty(folder))
-                {
-                    var maps = File.ReadAllLines("/proc/self/maps");
-                    File.AppendAllText(Path.Combine(folder, "native-crash.log"),
-                        report + string.Join("\\n", maps) + "\\n----\\n");
+                    var chain = (FatalSignalHandler)Marshal.GetDelegateForFunctionPointer(previousHandler, typeof(FatalSignalHandler));
+                    chain(signal, info, context);
+                    return;
                 }
             }
             catch { }
@@ -527,6 +555,21 @@ sub("External/Il2CppInterop/Il2CppInterop.HarmonySupport/Il2CppDetourMethodPatch
         }
 
         bool needsBoxing = false;""")
+
+# A method with no native body (abstract, or a virtual slot Unity 6 only fills in the
+# vtable) cannot be detoured: the detour would be installed at address 0 and the first
+# call jumps through a null pointer. Refuse it and let Harmony use the IL handler.
+sub("External/Il2CppInterop/Il2CppInterop.HarmonySupport/Il2CppDetourMethodPatcher.cs",
+    """            // Get the native MethodInfo struct for the target method
+            originalNativeMethodInfo =
+                UnityVersionHandler.Wrap((Il2CppMethodInfo*)(IntPtr)methodField.GetValue(null));""",
+    """            // Get the native MethodInfo struct for the target method
+            originalNativeMethodInfo =
+                UnityVersionHandler.Wrap((Il2CppMethodInfo*)(IntPtr)methodField.GetValue(null));
+
+            if (originalNativeMethodInfo.MethodPointer == IntPtr.Zero)
+                throw new NotSupportedException(
+                    $"no native body for {Original.DeclaringType}::{Original.Name}, cannot detour");""")
 
 # A struct without an explicit layout cannot appear in a native signature, and
 # treating the register it arrives in as a pointer corrupts memory, so such a

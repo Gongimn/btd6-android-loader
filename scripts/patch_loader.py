@@ -420,6 +420,37 @@ sub("Dependencies/SupportModules/Component.cs",
             MelonLogger.MsgDirect("[trace] create: SiblingFix done"); MelonLogger.Flush();""")
 
 # --------------------------------------------------- Il2CppInterop (vendored)
+
+# A patched method whose parameter is a struct goes through il2cpp_value_box in
+# the generated trampoline, and on arm64 a small struct arrives in registers
+# instead of a pointer, so boxing reads a bogus address. Print the signature of
+# every method we detour with the native type we assume for each parameter.
+sub("External/Il2CppInterop/Il2CppInterop.HarmonySupport/Il2CppDetourMethodPatcher.cs",
+    "        var managedParams = Original.GetParameters().Select(x => x.ParameterType).ToArray();",
+    """        var managedParams = Original.GetParameters().Select(x => x.ParameterType).ToArray();
+
+        try
+        {
+            Logger.Instance.LogInformation("detour: {Type}::{Method} return={Return} params={Params}",
+                Original.DeclaringType?.FullName, Original.Name, managedReturnType.FullName,
+                string.Join(", ", managedParams.Select(p => p.FullName)));
+            foreach (var patchedParam in managedParams)
+            {
+                string nativeName;
+                string classPointer;
+                try { nativeName = TrampolineHelpers.NativeType(patchedParam).Name; }
+                catch (Exception ex) { nativeName = "ERR:" + ex.GetType().Name; }
+                try { classPointer = Il2CppClassPointerStore.GetNativeClassPointer(patchedParam).ToInt64().ToString("X2"); }
+                catch (Exception ex) { classPointer = "ERR:" + ex.GetType().Name; }
+                Logger.Instance.LogInformation("detour:   {Method} param {Param} native={Native} classPtr=0x{Ptr}",
+                    Original.Name, patchedParam.FullName, nativeName, classPointer);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Instance.LogWarning("detour: could not describe {Method}: {Message}", Original.Name, ex.Message);
+        }""")
+
 # RegisterTypeOptions.LogSuccess used to be a plain setter. MonoMod re-emits the
 # Harmony wrappers with a call to the plain accessor, so an `init` accessor makes
 # every patch below it fail with MissingMethodException.

@@ -160,17 +160,19 @@ sub("MelonLoader/Core.cs",
         private static extern void _exit(int status);
 
         private static int crashFd = -1;
-        private static IntPtr previousHandler = IntPtr.Zero;
-        private static int previousFlags;
+        private static IntPtr crashHandlerBlock = IntPtr.Zero;
+        private static IntPtr crashPreviousAction = IntPtr.Zero;
         private static IntPtr crashMarker;
 
-        // Mono turns a SIGSEGV into a managed NullReferenceException on arm64, so its
-        // handler cannot simply be replaced: doing that kills the process while it is
-        // still starting. Take SIGSEGV over only to scribble the faulting register block
-        // into a file when pc is null (a jump through a null function pointer), then
-        // hand the signal back to whoever handled it before us. Everything in the
-        // handler must avoid allocations and file APIs: it runs on the crashing thread
-        // inside a signal, so only raw reads and write(2) are safe there.
+        // Mono implements NullReferenceException through SIGSEGV on arm64, so its handler
+        // cannot be replaced: doing that kills the process while it is still starting.
+        // Instead take SIGSEGV over only long enough to scribble the faulting register
+        // block into a file when pc is null (a jump through a null function pointer),
+        // then put the previous action back and return, so the kernel simply re-runs the
+        // faulting instruction and whoever handled it before handles it as usual.
+        //
+        // bionic's struct sigaction holds a 128 byte mask, so SA_SIGINFO lives at +136 and
+        // not at +16 like most other libcs; the layout is verified at install time.
         private static void InstallFatalSignalHandler()
         {
             try
@@ -194,25 +196,40 @@ sub("MelonLoader/Core.cs",
                 }
                 catch { }
 
-                IntPtr block = Marshal.AllocHGlobal(256);
-                IntPtr previous = Marshal.AllocHGlobal(256);
-                for (int i = 0; i < 256; i++)
-                {
-                    Marshal.WriteByte(block, i, 0);
-                    Marshal.WriteByte(previous, i, 0);
-                }
-                Marshal.WriteIntPtr(block, 0, nativeHandler);
-                Marshal.WriteInt32(block, 16, 0x00000004); // SA_SIGINFO
+                crashHandlerBlock = AllocateZeroedBlock();
+                crashPreviousAction = AllocateZeroedBlock();
+                Marshal.WriteIntPtr(crashHandlerBlock, 0, nativeHandler);
+                Marshal.WriteInt32(crashHandlerBlock, 136, 0x00000004); // SA_SIGINFO
 
-                int rc = sigaction(11, block, previous);
-                previousHandler = Marshal.ReadIntPtr(previous, 0);
-                previousFlags = Marshal.ReadInt32(previous, 16);
-                Console.WriteLine($"[trace] SIGSEGV handler rc={rc} fd={crashFd} previous=0x{previousHandler.ToInt64():X} flags=0x{previousFlags:X}");
+                int rc = sigaction(11, crashHandlerBlock, crashPreviousAction);
+
+                // Read the action back: if the kernel did not keep our handler and our
+                // flag, the offsets are wrong and we must not leave a broken handler.
+                IntPtr verify = AllocateZeroedBlock();
+                sigaction(11, IntPtr.Zero, verify);
+                bool handlerPlaced = Marshal.ReadIntPtr(verify, 0) == nativeHandler;
+                bool flagPlaced = Marshal.ReadInt32(verify, 136) == 0x00000004;
+                Console.WriteLine($"[trace] SIGSEGV rc={rc} fd={crashFd} handler={handlerPlaced} flags={flagPlaced}");
+
+                if (!handlerPlaced || !flagPlaced)
+                {
+                    sigaction(11, crashPreviousAction, IntPtr.Zero);
+                    crashHandlerBlock = IntPtr.Zero;
+                    Console.WriteLine("[trace] SIGSEGV layout mismatch, handler removed");
+                }
             }
             catch (Exception ex)
             {
                 Console.WriteLine("[trace] SIGSEGV handler install failed: " + ex.Message);
             }
+        }
+
+        private static IntPtr AllocateZeroedBlock()
+        {
+            var block = Marshal.AllocHGlobal(256);
+            for (int i = 0; i < 256; i++)
+                Marshal.WriteByte(block, i, 0);
+            return block;
         }
 
         private static void OnFatalSignal(int signal, IntPtr info, IntPtr context)
@@ -234,20 +251,14 @@ sub("MelonLoader/Core.cs",
             }
             catch { }
 
-            // Hand the signal on to the previous handler, so null references and normal
-            // single faults keep behaving exactly as they did before.
+            // Put the previous action back and return: the kernel re-runs the faulting
+            // instruction, so Mono sees the signal exactly as it would have without us.
             try
             {
-                if (previousHandler != IntPtr.Zero && previousHandler != (IntPtr)1)
-                {
-                    var chain = (FatalSignalHandler)Marshal.GetDelegateForFunctionPointer(previousHandler, typeof(FatalSignalHandler));
-                    chain(signal, info, context);
-                    return;
-                }
+                if (crashPreviousAction != IntPtr.Zero)
+                    sigaction(signal, crashPreviousAction, IntPtr.Zero);
             }
             catch { }
-
-            _exit(1);
         }
 
         private static void InstallCrashDiagnostics()

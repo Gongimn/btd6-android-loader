@@ -307,6 +307,7 @@ sub("MelonLoader/Core.cs",
     "        private static void AddUnityDebugLog()",
     '''        private static void InstallAndroidTrustStore()
         {
+            PrepareCertificateHome();
             try
             {
                 var dirs = new[]
@@ -390,6 +391,7 @@ sub("MelonLoader/Core.cs",
                 }
 
                 MelonLogger.MsgDirect("[trace] mono store: " + written + " certs written into " + usedDirs);
+                ReportCertificateSupport(collection);
                 MelonLogger.Flush();
                 DumpTrustStore();
                 TlsSelfTest();
@@ -419,6 +421,71 @@ sub("MelonLoader/Core.cs",
                 MelonLogger.Warning("[trace] trust store failed: " + ex.Message);
                 MelonLogger.Flush();
             }
+        }
+
+        // .NET keeps per-user root certs in $HOME/.dotnet/...; HOME is empty here, so the
+        // store pointed at an unwritable /data/... path and rejected every add.
+        private static void PrepareCertificateHome()
+        {
+            try
+            {
+                var home = Path.Combine(MelonEnvironment.MelonLoaderDirectory, ".home");
+                Directory.CreateDirectory(home);
+                Environment.SetEnvironmentVariable("HOME", home);
+                var stores = Path.Combine(home, ".dotnet", "corefx", "cryptography", "x509stores");
+                Directory.CreateDirectory(Path.Combine(stores, "root"));
+                Directory.CreateDirectory(Path.Combine(stores, "ca"));
+                MelonLogger.MsgDirect("[trace] cert home: " + home); MelonLogger.Flush();
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning("[trace] cert home failed: " + ex.Message); MelonLogger.Flush();
+            }
+        }
+
+        private static void ReportCertificateSupport(X509Certificate2Collection collection)
+        {
+            try
+            {
+                if (collection.Count > 0)
+                {
+                    using (var chain = new X509Chain())
+                    {
+                        var ok = chain.Build(collection[0]);
+                        var flags = "";
+                        foreach (X509ChainStatus status in chain.ChainStatus)
+                            flags += status.Status + " ";
+                        MelonLogger.MsgDirect("[trace] chain probe ok=" + ok + " flags=" + flags.Trim() +
+                                              " subject=" + collection[0].Subject);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.MsgDirect("[trace] chain probe failed: " + ex.GetType().Name + ": " + ex.Message);
+            }
+
+            try
+            {
+                using (var store = new X509Store(StoreName.Root, StoreLocation.CurrentUser))
+                {
+                    store.Open(OpenFlags.ReadOnly);
+                    var pal = store.GetType()
+                        .GetField("_storePal", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                        .GetValue(store);
+                    var path = pal.GetType()
+                        .GetField("_storePath", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                        .GetValue(pal);
+                    MelonLogger.MsgDirect("[trace] current user root store: " + path + " count=" + store.Certificates.Count);
+                    store.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.MsgDirect("[trace] store path probe failed: " + ex.GetType().Name + ": " + ex.Message);
+            }
+
+            MelonLogger.Flush();
         }
 
         // Where does this runtime actually look for roots? Reflection over the store

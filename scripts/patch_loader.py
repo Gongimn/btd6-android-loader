@@ -391,6 +391,7 @@ sub("MelonLoader/Core.cs",
 
                 MelonLogger.MsgDirect("[trace] mono store: " + written + " certs written into " + usedDirs);
                 MelonLogger.Flush();
+                DumpTrustStore();
                 TlsSelfTest();
                 var added = 0;
                 using (var store = new X509Store(StoreName.Root, StoreLocation.CurrentUser))
@@ -417,6 +418,70 @@ sub("MelonLoader/Core.cs",
             {
                 MelonLogger.Warning("[trace] trust store failed: " + ex.Message);
                 MelonLogger.Flush();
+            }
+        }
+
+        // Where does this runtime actually look for roots? Reflection over the store
+        // gives the on-disk path, which is what we then have to write into.
+        private static void DumpTrustStore()
+        {
+            MelonLogger.MsgDirect("[trace] framework: " + System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription);
+            MelonLogger.MsgDirect("[trace] env HOME=" + Environment.GetEnvironmentVariable("HOME") +
+                                  " XDG_CONFIG_HOME=" + Environment.GetEnvironmentVariable("XDG_CONFIG_HOME"));
+            foreach (var location in new[] { StoreLocation.CurrentUser, StoreLocation.LocalMachine })
+            {
+                try
+                {
+                    using (var store = new X509Store(StoreName.Root, location))
+                    {
+                        store.Open(OpenFlags.ReadOnly);
+                        MelonLogger.MsgDirect("[trace] root store " + location + ": " + store.Certificates.Count + " certs");
+                        DumpObject(store, 0);
+                        var inner = store.GetType()
+                            .GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                        foreach (var field in inner)
+                        {
+                            var value = field.GetValue(store);
+                            if (value != null && !(value is string))
+                                DumpObject(value, 1);
+                        }
+                        store.Close();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MelonLogger.MsgDirect("[trace] root store " + location + " failed: " + ex.GetType().Name + ": " + ex.Message);
+                }
+            }
+            MelonLogger.Flush();
+        }
+
+        private static void DumpObject(object target, int depth)
+        {
+            var indent = depth == 0 ? "  " : "    ";
+            foreach (var field in target.GetType().GetFields(
+                         System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic |
+                         System.Reflection.BindingFlags.Public))
+            {
+                object value = null;
+                try { value = field.GetValue(target); } catch { continue; }
+                var text = value == null ? "null" : value.ToString();
+                if (text != null && text.Length > 120) text = text.Substring(0, 120);
+                MelonLogger.MsgDirect("[trace] " + indent + field.Name + " = " + text);
+            }
+            foreach (var property in target.GetType().GetProperties(
+                         System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic |
+                         System.Reflection.BindingFlags.Public))
+            {
+                if (property.GetIndexParameters().Length != 0 || property.GetGetMethod(true) == null)
+                    continue;
+                object value = null;
+                try { value = property.GetValue(target); } catch { continue; }
+                if (!(value is string) && !(value is int))
+                    continue;
+                var text = value.ToString();
+                if (text.Length > 120) text = text.Substring(0, 120);
+                MelonLogger.MsgDirect("[trace] " + indent + property.Name + " => " + text);
             }
         }
 

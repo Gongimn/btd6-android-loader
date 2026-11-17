@@ -847,6 +847,10 @@ sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
 
         Logger.Instance.LogInformation("convert: {Type} done", typeof(TIl2Cpp).FullName);
         converted.method_ptr = methodInfo.MethodPointer;
+
+        // il2cpp calls a delegate through invoke_impl, and the object created above is
+        // a bare il2cpp_object_new: without this field the native call jumps to zero.
+        converted.invoke_impl = converted.method_ptr;
         if (nativeInvokeObject != IntPtr.Zero)
             converted.method_info = new Il2CppSystem.Reflection.MethodInfo(nativeInvokeObject);
 

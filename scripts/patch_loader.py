@@ -160,19 +160,21 @@ sub("MelonLoader/Core.cs",
         private static extern void _exit(int status);
 
         private static int crashFd = -1;
+        private static int crashDumpsWritten;
         private static IntPtr crashHandlerBlock = IntPtr.Zero;
         private static IntPtr crashPreviousAction = IntPtr.Zero;
         private static IntPtr crashMarker;
 
         // Mono implements NullReferenceException through SIGSEGV on arm64, so its handler
         // cannot be replaced: doing that kills the process while it is still starting.
-        // Instead take SIGSEGV over only long enough to scribble the faulting register
-        // block into a file when pc is null (a jump through a null function pointer),
-        // then put the previous action back and return, so the kernel simply re-runs the
-        // faulting instruction and whoever handled it before handles it as usual.
+        // Instead take SIGSEGV over only long enough to scribble the faulting registers
+        // into a file, then put the previous action back and return, so the kernel
+        // re-runs the faulting instruction and whoever handled it before handles it.
         //
-        // bionic's struct sigaction holds a 128 byte mask, so SA_SIGINFO lives at +136 and
-        // not at +16 like most other libcs; the layout is verified at install time.
+        // bionic's struct sigaction is flags first and handler second (verified by
+        // disassembling sigaction in the device's libc.so): sa_flags at +0,
+        // sa_handler at +8, sa_mask at +16, sa_restorer at +24. Getting this wrong
+        // installs a handler that receives garbage and kills the game at startup.
         private static void InstallFatalSignalHandler()
         {
             try
@@ -198,18 +200,18 @@ sub("MelonLoader/Core.cs",
 
                 crashHandlerBlock = AllocateZeroedBlock();
                 crashPreviousAction = AllocateZeroedBlock();
-                Marshal.WriteIntPtr(crashHandlerBlock, 0, nativeHandler);
-                Marshal.WriteInt32(crashHandlerBlock, 136, 0x00000004); // SA_SIGINFO
+                Marshal.WriteInt32(crashHandlerBlock, 0, 0x00000004); // SA_SIGINFO
+                Marshal.WriteIntPtr(crashHandlerBlock, 8, nativeHandler);
 
                 int rc = sigaction(11, crashHandlerBlock, crashPreviousAction);
 
                 // Read the action back: if the kernel did not keep our handler and our
-                // flag, the offsets are wrong and we must not leave a broken handler.
+                // flag, the offsets are wrong and a broken handler must not stay.
                 IntPtr verify = AllocateZeroedBlock();
                 sigaction(11, IntPtr.Zero, verify);
-                bool handlerPlaced = Marshal.ReadIntPtr(verify, 0) == nativeHandler;
-                bool flagPlaced = Marshal.ReadInt32(verify, 136) == 0x00000004;
-                Console.WriteLine($"[trace] SIGSEGV rc={rc} fd={crashFd} handler={handlerPlaced} flags={flagPlaced}");
+                bool handlerPlaced = Marshal.ReadIntPtr(verify, 8) == nativeHandler;
+                bool flagPlaced = Marshal.ReadInt32(verify, 0) == 0x00000004;
+                Console.WriteLine($"[trace] SIGSEGV rc={rc} fd={crashFd} handler={handlerPlaced} flags={flagPlaced} prevFlags=0x{Marshal.ReadInt32(crashPreviousAction, 0):X} prevHandler=0x{Marshal.ReadIntPtr(crashPreviousAction, 8).ToInt64():X}");
 
                 if (!handlerPlaced || !flagPlaced)
                 {
@@ -236,16 +238,16 @@ sub("MelonLoader/Core.cs",
         {
             try
             {
-                // ucontext_t on arm64/bionic: uc_mcontext starts at +48 and holds a
-                // sigcontext: fault_address, regs[31] (x29 at +288, x30 at +296),
-                // sp at +304, pc at +312.
-                long pc = context == IntPtr.Zero ? -1 : Marshal.ReadInt64((IntPtr)(context.ToInt64() + 312));
-                if (pc == 0 && crashFd >= 0)
+                // Dump the first few faults whole: the ucontext header size differs
+                // between libcs, so the register offsets are worked out from the data
+                // instead of being assumed.
+                if (crashFd >= 0 && crashDumpsWritten < 3 && context != IntPtr.Zero)
                 {
+                    crashDumpsWritten++;
                     write(crashFd, crashMarker, (IntPtr)8);
-                    write(crashFd, context, (IntPtr)512);
                     if (info != IntPtr.Zero)
                         write(crashFd, info, (IntPtr)128);
+                    write(crashFd, context, (IntPtr)1024);
                     write(crashFd, crashMarker, (IntPtr)8);
                 }
             }

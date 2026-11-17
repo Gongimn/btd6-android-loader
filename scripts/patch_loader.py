@@ -290,7 +290,9 @@ sub("MelonLoader/Core.cs",
     "using System.Text;",
     """using System.Text;
 using System.Net;
+using System.Net.Http;
 using System.Net.Security;
+using System.Collections.Generic;
 using System.Security.Cryptography.X509Certificates;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;""")
@@ -347,6 +349,49 @@ sub("MelonLoader/Core.cs",
 
                 var collection = new X509Certificate2Collection();
                 collection.ImportFromPem(builder.ToString());
+
+                // Mono's X509Chain reads its own on-disk stores, where X509Store.Add is
+                // rejected, so drop the DER files in by hand.
+                var storeRoots = new List<string>();
+                var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                if (!string.IsNullOrEmpty(appDataPath))
+                    storeRoots.Add(Path.Combine(appDataPath, ".mono", "certs"));
+                var homePath = Environment.GetEnvironmentVariable("HOME");
+                if (!string.IsNullOrEmpty(homePath))
+                    storeRoots.Add(Path.Combine(homePath, ".config", ".mono", "certs"));
+                storeRoots.Add("/usr/share/.mono/certs");
+                storeRoots.Add(Path.Combine(MelonEnvironment.MelonLoaderDirectory, ".mono", "certs"));
+
+                var written = 0;
+                var usedDirs = "";
+                foreach (var root in storeRoots)
+                {
+                    foreach (var kind in new[] { "Trust", "CA" })
+                    {
+                        var dir = Path.Combine(root, kind);
+                        try { Directory.CreateDirectory(dir); } catch { continue; }
+                        usedDirs += dir + " ";
+                        foreach (var cert in collection)
+                        {
+                            try
+                            {
+                                var name = cert.Thumbprint;
+                                if (string.IsNullOrEmpty(name))
+                                    continue;
+                                var target = Path.Combine(dir, name + ".cer");
+                                if (File.Exists(target))
+                                    continue;
+                                File.WriteAllBytes(target, cert.Export(X509ContentType.Cert));
+                                written++;
+                            }
+                            catch { }
+                        }
+                    }
+                }
+
+                MelonLogger.MsgDirect("[trace] mono store: " + written + " certs written into " + usedDirs);
+                MelonLogger.Flush();
+                TlsSelfTest();
                 var added = 0;
                 using (var store = new X509Store(StoreName.Root, StoreLocation.CurrentUser))
                 {
@@ -371,6 +416,39 @@ sub("MelonLoader/Core.cs",
             catch (Exception ex)
             {
                 MelonLogger.Warning("[trace] trust store failed: " + ex.Message);
+                MelonLogger.Flush();
+            }
+        }
+
+        // One HTTPS GET at startup: tells us in the log whether TLS works, without
+        // waiting for a mod to hit the network.
+        private static void TlsSelfTest()
+        {
+            try
+            {
+                Task.Run(async () =>
+                {
+                    await Task.Delay(5000);
+                    try
+                    {
+                        using (var client = new HttpClient())
+                        {
+                            client.Timeout = TimeSpan.FromSeconds(25);
+                            var body = await client.GetStringAsync("https://api.github.com/zen");
+                            MelonLogger.MsgDirect("[trace] tls self-test ok: " + body.Trim());
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        var inner = ex.InnerException != null ? " <- " + ex.InnerException.Message : "";
+                        MelonLogger.MsgDirect("[trace] tls self-test failed: " + ex.GetType().Name + ": " + ex.Message + inner);
+                    }
+                    MelonLogger.Flush();
+                });
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning("[trace] tls self-test could not start: " + ex.Message);
                 MelonLogger.Flush();
             }
         }

@@ -1293,6 +1293,21 @@ sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
     private static int TraceCount;
     private static int ConvertStackCount;
 
+    private static string delegateMode;
+    private static string DelegateMode()
+    {
+        if (delegateMode != null)
+            return delegateMode;
+        try
+        {
+            var dir = System.Environment.GetEnvironmentVariable("MELON_DEBUG_DIR");
+            var path = System.IO.Path.Combine(dir ?? "", "delegate_mode.txt");
+            delegateMode = System.IO.File.Exists(path) ? System.IO.File.ReadAllText(path).Trim() : "default";
+        }
+        catch { delegateMode = "default"; }
+        return delegateMode;
+    }
+
     // Who asks for a managed -> il2cpp delegate, and from where: the crash that
     // follows the Action<Task> conversion is in the caller, so record its stack.
     private static void TryLogConvertStack(string type)
@@ -1368,11 +1383,19 @@ sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
 
         // il2cpp calls a delegate through invoke_impl, and the object created above is
         // a bare il2cpp_object_new: without this field the native call jumps to zero.
-        converted.invoke_impl = converted.method_ptr;
-        if (nativeInvokeObject != IntPtr.Zero)
+        // delegate_mode.txt next to the logs switches how the delegate is finished:
+        // default = our reflection object, keepinfo = leave what the il2cpp ctor set,
+        // noinfo = clear it, keepinvoke = never touch invoke_impl.
+        var mode = DelegateMode();
+        if (mode != "keepinvoke")
+            converted.invoke_impl = converted.method_ptr;
+        if (mode == "noinfo")
+            converted.method_info = null;
+        else if (mode != "keepinfo" && nativeInvokeObject != IntPtr.Zero)
             converted.method_info = new Il2CppSystem.Reflection.MethodInfo(nativeInvokeObject);
 
         // A null field here is what turns the later call into a jump to address 0.
+        Logger.Instance.LogInformation("convert: {Type} mode={Mode}", typeof(TIl2Cpp).FullName, mode);
         Logger.Instance.LogInformation(
             "convert: {Type} pointers method_ptr=0x{P} invoke_impl=0x{I} method=0x{M} method_info=0x{MI} target=0x{T}",
             typeof(TIl2Cpp).FullName,

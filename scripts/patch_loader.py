@@ -142,8 +142,89 @@ sub("MelonLoader/Core.cs",
             catch { }
         }
 
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate void FatalSignalHandler(int signal, IntPtr info, IntPtr context);
+
+        private static FatalSignalHandler ourFatalHandler;
+
+        [DllImport("libc", SetLastError = true)]
+        private static extern int sigaction(int signum, IntPtr act, IntPtr oldact);
+
+        [DllImport("libc", SetLastError = true)]
+        private static extern void _exit(int status);
+
+        // The process dies on a jump to a null pointer and Android keeps neither the
+        // message nor a tombstone, so take the faulting frame and walk the frame
+        // pointer chain ourselves and keep /proc/self/maps next to it to resolve the
+        // addresses afterwards.
+        private static void InstallFatalSignalHandler()
+        {
+            try
+            {
+                ourFatalHandler = OnFatalSignal;
+                IntPtr nativeHandler = Marshal.GetFunctionPointerForDelegate(ourFatalHandler);
+                IntPtr block = Marshal.AllocHGlobal(64);
+                for (int i = 0; i < 64; i++)
+                    Marshal.WriteByte(block, i, 0);
+                Marshal.WriteIntPtr(block, 0, nativeHandler);
+                Marshal.WriteInt32(block, 16, 0x00000004); // SA_SIGINFO
+
+                foreach (var fatalSignal in new[] { 4, 6, 7, 11 })
+                    sigaction(fatalSignal, block, IntPtr.Zero);
+            }
+            catch { }
+        }
+
+        private static void OnFatalSignal(int signal, IntPtr info, IntPtr context)
+        {
+            try
+            {
+                var folder = Environment.GetEnvironmentVariable("MELON_DEBUG_DIR");
+                var report = new StringBuilder();
+                report.AppendLine("SIGNAL " + signal);
+
+                long faultAddress = 0;
+                if (info != IntPtr.Zero)
+                    faultAddress = Marshal.ReadInt64(info, 16); // siginfo_t: si_addr
+
+                long pc = 0, sp = 0, fp = 0;
+                if (context != IntPtr.Zero)
+                {
+                    long mcontext = context.ToInt64() + 48; // uc_mcontext on arm64
+                    fp = Marshal.ReadInt64((IntPtr)(mcontext + 240)); // regs[29]
+                    sp = Marshal.ReadInt64((IntPtr)(mcontext + 256));
+                    pc = Marshal.ReadInt64((IntPtr)(mcontext + 264));
+                }
+
+                report.AppendLine("si_addr=0x" + faultAddress.ToString("X"));
+                report.AppendLine("pc=0x" + pc.ToString("X") + " sp=0x" + sp.ToString("X") + " fp=0x" + fp.ToString("X"));
+
+                var frame = fp;
+                for (int depth = 0; depth < 48 && frame > 0x1000; depth++)
+                {
+                    var next = Marshal.ReadInt64((IntPtr)frame);
+                    var saved = Marshal.ReadInt64((IntPtr)(frame + 8));
+                    report.AppendLine("#" + depth + " 0x" + saved.ToString("X"));
+                    if (next <= frame)
+                        break;
+                    frame = next;
+                }
+
+                if (!string.IsNullOrEmpty(folder))
+                {
+                    var maps = File.ReadAllLines("/proc/self/maps");
+                    File.AppendAllText(Path.Combine(folder, "native-crash.log"),
+                        report + string.Join("\\n", maps) + "\\n----\\n");
+                }
+            }
+            catch { }
+
+            _exit(1);
+        }
+
         private static void InstallCrashDiagnostics()
         {
+            InstallFatalSignalHandler();
             try
             {
                 var log = Path.Combine(MelonEnvironment.MelonLoaderDirectory, "unhandled.log");

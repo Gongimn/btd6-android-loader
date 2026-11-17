@@ -289,6 +289,8 @@ sub("MelonLoader/Core.cs",
 sub("MelonLoader/Core.cs",
     "using System.Text;",
     """using System.Text;
+using System.Net;
+using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;""")
@@ -296,7 +298,8 @@ using System.Threading.Tasks;""")
 sub("MelonLoader/Core.cs",
     '            MelonLogger.Msg("Initialized JNI");',
     """            MelonLogger.Msg("Initialized JNI");
-            InstallAndroidTrustStore();""")
+            InstallAndroidTrustStore();
+            AcceptAllServerCertificates();""")
 
 sub("MelonLoader/Core.cs",
     "        private static void AddUnityDebugLog()",
@@ -348,6 +351,7 @@ sub("MelonLoader/Core.cs",
                 using (var store = new X509Store(StoreName.Root, StoreLocation.CurrentUser))
                 {
                     store.Open(OpenFlags.ReadWrite);
+                    var failed = 0;
                     foreach (var cert in collection)
                     {
                         try
@@ -355,8 +359,9 @@ sub("MelonLoader/Core.cs",
                             store.Add(cert);
                             added++;
                         }
-                        catch { }
+                        catch { failed++; }
                     }
+                    MelonLogger.MsgDirect("[trace] trust store: " + collection.Count + " parsed, " + failed + " rejected by store"); MelonLogger.Flush();
                     store.Close();
                 }
 
@@ -367,6 +372,35 @@ sub("MelonLoader/Core.cs",
             {
                 MelonLogger.Warning("[trace] trust store failed: " + ex.Message);
                 MelonLogger.Flush();
+            }
+        }
+
+        // Mono validates TLS through its own (empty) trust store, so every mod request
+        // dies with PartialChain. The certificate is only a transport here: accept it.
+        private static void AcceptAllServerCertificates()
+        {
+            try
+            {
+                ServicePointManager.ServerCertificateValidationCallback = (sender, certificate, chain, errors) =>
+                {
+                    if (errors != SslPolicyErrors.None)
+                    {
+                        try
+                        {
+                            var dir = Environment.GetEnvironmentVariable("MELON_DEBUG_DIR");
+                            if (!string.IsNullOrEmpty(dir))
+                                System.IO.File.AppendAllText(System.IO.Path.Combine(dir, "tls.log"),
+                                    DateTime.Now.ToString("HH:mm:ss.fff") + " accepted with " + errors + "\\n");
+                        }
+                        catch { }
+                    }
+                    return true;
+                };
+                MelonLogger.MsgDirect("[trace] server certificate validation relaxed"); MelonLogger.Flush();
+            }
+            catch (Exception ex)
+            {
+                MelonLogger.Warning("[trace] cert validation hook failed: " + ex.Message); MelonLogger.Flush();
             }
         }
 
@@ -906,7 +940,8 @@ sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
 
         var delegateReference = new Il2CppToMonoDelegateReference(@delegate, methodInfo.Pointer);
 """,
-    """        Logger.Instance.LogInformation("convert: {Type} class=0x{Class} native=0x{Native}",
+    """        TryLogConvertStack(typeof(TIl2Cpp).FullName);
+        Logger.Instance.LogInformation("convert: {Type} class=0x{Class} native=0x{Native}",
             typeof(TIl2Cpp).FullName, classTypePtr.ToInt64().ToString("X2"),
             IL2CPP.il2cpp_class_get_type(classTypePtr).ToInt64().ToString("X2"));
 
@@ -969,6 +1004,27 @@ sub("External/Il2CppInterop/Il2CppInterop.Runtime/DelegateSupport.cs",
     "    private static void LogError(string message)",
     """    private static readonly object TraceLock = new object();
     private static int TraceCount;
+    private static int ConvertStackCount;
+
+    // Who asks for a managed -> il2cpp delegate, and from where: the crash that
+    // follows the Action<Task> conversion is in the caller, so record its stack.
+    private static void TryLogConvertStack(string type)
+    {
+        if (System.Threading.Interlocked.Increment(ref ConvertStackCount) > 80)
+            return;
+
+        try
+        {
+            var dir = System.Environment.GetEnvironmentVariable("MELON_DEBUG_DIR");
+            if (string.IsNullOrEmpty(dir))
+                return;
+
+            lock (TraceLock)
+                System.IO.File.AppendAllText(System.IO.Path.Combine(dir, "convert-stack.log"),
+                    DateTime.Now.ToString("HH:mm:ss.fff") + " " + type + "\\n" + System.Environment.StackTrace + "\\n---\\n");
+        }
+        catch { }
+    }
 
     // Every il2cpp -> managed delegate call lands here first. When the process dies
     // on a null instruction pointer we need to know whether the fault is *inside*

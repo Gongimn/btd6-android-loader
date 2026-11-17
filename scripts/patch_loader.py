@@ -421,6 +421,32 @@ sub("Dependencies/SupportModules/Component.cs",
 
 # --------------------------------------------------- Il2CppInterop (vendored)
 
+sub("External/Il2CppInterop/Il2CppInterop.HarmonySupport/Il2CppDetourMethodPatcher.cs",
+    """        unmanagedParams[^1] = typeof(Il2CppMethodInfo*);
+        Array.Copy(managedParams.Select(TrampolineHelpers.NativeType).ToArray(), 0,
+            unmanagedParams, paramStartIndex, managedParams.Length);""",
+    """        unmanagedParams[^1] = typeof(Il2CppMethodInfo*);
+        // il2cpp value types (game structs, enums) are passed by value: on arm64 a
+        // 16-byte struct arrives in two registers, never as a pointer to it. Declare
+        // the parameter as the struct itself so the ABI matches. TrampolineHelpers
+        // maps every struct to IntPtr, which makes the boxing read a bogus address.
+        Array.Copy(managedParams
+                .Select(p => p.IsSubclassOf(typeof(ValueType)) ? p : TrampolineHelpers.NativeType(p))
+                .ToArray(), 0,
+            unmanagedParams, paramStartIndex, managedParams.Length);""")
+
+# Box only what actually needs a box: a struct that already arrived by value is
+# handed to the managed method unchanged.
+sub("External/Il2CppInterop/Il2CppInterop.HarmonySupport/Il2CppDetourMethodPatcher.cs",
+    "        bool needsBoxing = managedParamType.IsSubclassOf(typeof(ValueType));",
+    """        if (managedParamType.IsSubclassOf(typeof(ValueType)))
+        {
+            il.Emit(OpCodes.Ldarg, argIndex);
+            return;
+        }
+
+        bool needsBoxing = false;""")
+
 # A patched method whose parameter is a struct goes through il2cpp_value_box in
 # the generated trampoline, and on arm64 a small struct arrives in registers
 # instead of a pointer, so boxing reads a bogus address. Print the signature of

@@ -155,26 +155,33 @@ sub("MelonLoader/Core.cs",
         [DllImport("libc", SetLastError = true)]
         private static extern int sigaction(int signum, IntPtr act, IntPtr oldact);
 
+        [DllImport("libc", SetLastError = true)]
+        private static extern int sigaltstack(IntPtr ss, IntPtr oss);
+
         [DllImport("libc", SetLastError = true, EntryPoint = "open", CharSet = CharSet.Ansi)]
         private static extern int openCrashLog(string path, int flags, int mode);
 
         [DllImport("libc", SetLastError = true)]
         private static extern IntPtr write(int fd, IntPtr buffer, IntPtr count);
 
-        [DllImport("libc", SetLastError = true)]
-        private static extern void _exit(int status);
+        // The game dies from SIGSEGV, but an abort, an illegal instruction or a bus
+        // error would leave just as little behind, so take every fatal one.
+        private static readonly int[] FatalSignals = { 4, 6, 7, 8, 11, 31 };
 
         private static int crashFd = -1;
         private static int crashDumpsWritten;
         private static IntPtr crashHandlerBlock = IntPtr.Zero;
-        private static IntPtr crashPreviousAction = IntPtr.Zero;
+        private static IntPtr crashPreviousActions;
         private static IntPtr crashMarker;
+        private static IntPtr crashAltStack;
 
         // Mono implements NullReferenceException through SIGSEGV on arm64, so its handler
         // cannot be replaced: doing that kills the process while it is still starting.
-        // Instead take SIGSEGV over only long enough to scribble the faulting registers
-        // into a file, then put the previous action back and return, so the kernel
-        // re-runs the faulting instruction and whoever handled it before handles it.
+        // Instead take the fatal signals over only long enough to scribble the faulting
+        // registers into a file, then put the previous action back and return, so the
+        // kernel re-runs the faulting instruction and whoever handled it before handles
+        // it. A crash on an exhausted stack needs an alternate stack of our own, hence
+        // SA_ONSTACK.
         //
         // bionic's struct sigaction is flags first and handler second (verified by
         // disassembling sigaction in the device's libc.so): sa_flags at +0,
@@ -206,31 +213,51 @@ sub("MelonLoader/Core.cs",
                 }
                 catch { }
 
+                try
+                {
+                    crashAltStack = Marshal.AllocHGlobal(256 * 1024);
+                    var stackBlock = AllocateZeroedBlock();
+                    Marshal.WriteIntPtr(stackBlock, 0, crashAltStack);
+                    Marshal.WriteInt32(stackBlock, 8, 0);
+                    Marshal.WriteIntPtr(stackBlock, 16, (IntPtr)(256 * 1024));
+                    sigaltstack(stackBlock, IntPtr.Zero);
+                }
+                catch { }
+
                 crashHandlerBlock = AllocateZeroedBlock();
-                crashPreviousAction = AllocateZeroedBlock();
-                Marshal.WriteInt32(crashHandlerBlock, 0, 0x00000004); // SA_SIGINFO
+                crashPreviousActions = AllocateZeroedBlock();
+                Marshal.WriteInt32(crashHandlerBlock, 0, 0x08000004); // SA_ONSTACK | SA_SIGINFO
                 Marshal.WriteIntPtr(crashHandlerBlock, 8, nativeHandler);
 
-                int rc = sigaction(11, crashHandlerBlock, crashPreviousAction);
+                var report = new System.Text.StringBuilder();
+                for (int i = 0; i < FatalSignals.Length; i++)
+                {
+                    int sig = FatalSignals[i];
+                    IntPtr prev = crashPreviousActions + i * 32;
+                    int rc = sigaction(sig, crashHandlerBlock, prev);
+                    report.Append(" ").Append(sig).Append(":rc=").Append(rc)
+                        .Append("/prev=0x").Append(Marshal.ReadIntPtr(prev, 8).ToInt64().ToString("X"));
+                }
+                Console.WriteLine("[trace] fatal handlers:" + report + " fd=" + crashFd);
 
-                // Read the action back: if the kernel did not keep our handler and our
+                // Read one action back: if the kernel did not keep our handler and our
                 // flag, the offsets are wrong and a broken handler must not stay.
                 IntPtr verify = AllocateZeroedBlock();
                 sigaction(11, IntPtr.Zero, verify);
                 bool handlerPlaced = Marshal.ReadIntPtr(verify, 8) == nativeHandler;
-                bool flagPlaced = Marshal.ReadInt32(verify, 0) == 0x00000004;
-                Console.WriteLine($"[trace] SIGSEGV rc={rc} fd={crashFd} handler={handlerPlaced} flags={flagPlaced} prevFlags=0x{Marshal.ReadInt32(crashPreviousAction, 0):X} prevHandler=0x{Marshal.ReadIntPtr(crashPreviousAction, 8).ToInt64():X}");
-
-                if (!handlerPlaced || !flagPlaced)
+                int flagsPlaced = Marshal.ReadInt32(verify, 0);
+                Console.WriteLine($"[trace] SIGSEGV verify handler={handlerPlaced} flags=0x{flagsPlaced:X}");
+                if (!handlerPlaced)
                 {
-                    sigaction(11, crashPreviousAction, IntPtr.Zero);
+                    for (int i = 0; i < FatalSignals.Length; i++)
+                        sigaction(FatalSignals[i], IntPtr.Zero, IntPtr.Zero);
                     crashHandlerBlock = IntPtr.Zero;
                     Console.WriteLine("[trace] SIGSEGV layout mismatch, handler removed");
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[trace] SIGSEGV handler install failed: " + ex.Message);
+                Console.WriteLine("[trace] fatal handler install failed: " + ex.Message);
             }
         }
 
@@ -246,8 +273,9 @@ sub("MelonLoader/Core.cs",
         private static IntPtr crashVerifyBlock;
         private static int handlerRearms;
 
-        // Whoever owns SIGSEGV at crash time is the one that sees the registers, and by
-        // the time the game is up that is never us unless we take the signal back.
+        // Whoever owns the fatal signals at crash time is the one that sees the
+        // registers, and by the time the game is up that is never us unless we take
+        // them back.
         private static void EnsureFatalSignalHandler()
         {
             try
@@ -255,17 +283,21 @@ sub("MelonLoader/Core.cs",
                 if (ourHandlerPointer == IntPtr.Zero || crashHandlerBlock == IntPtr.Zero
                     || crashVerifyBlock == IntPtr.Zero)
                     return;
-                for (int i = 0; i < 256; i++)
-                    Marshal.WriteByte(crashVerifyBlock, i, 0);
-                if (sigaction(11, IntPtr.Zero, crashVerifyBlock) != 0)
-                    return;
-                var owner = Marshal.ReadIntPtr(crashVerifyBlock, 8);
-                if (owner == ourHandlerPointer)
-                    return;
-                sigaction(11, crashHandlerBlock, IntPtr.Zero);
-                if (handlerRearms < 4)
-                    Console.WriteLine($"[trace] SIGSEGV handler re-armed over 0x{owner.ToInt64():X}");
-                handlerRearms++;
+                for (int i = 0; i < FatalSignals.Length; i++)
+                {
+                    int sig = FatalSignals[i];
+                    for (int j = 0; j < 256; j++)
+                        Marshal.WriteByte(crashVerifyBlock, j, 0);
+                    if (sigaction(sig, IntPtr.Zero, crashVerifyBlock) != 0)
+                        continue;
+                    var owner = Marshal.ReadIntPtr(crashVerifyBlock, 8);
+                    if (owner == ourHandlerPointer)
+                        continue;
+                    sigaction(sig, crashHandlerBlock, IntPtr.Zero);
+                    if (handlerRearms < 8)
+                        Console.WriteLine($"[trace] signal {sig} handler re-armed over 0x{owner.ToInt64():X}");
+                    handlerRearms++;
+                }
             }
             catch { }
         }
@@ -277,13 +309,14 @@ sub("MelonLoader/Core.cs",
                 // Dump the first few faults whole: the ucontext header size differs
                 // between libcs, so the register offsets are worked out from the data
                 // instead of being assumed.
-                if (crashFd >= 0 && crashDumpsWritten < 6 && context != IntPtr.Zero)
+                if (crashFd >= 0 && crashDumpsWritten < 6)
                 {
                     crashDumpsWritten++;
                     write(crashFd, crashMarker, (IntPtr)8);
                     if (info != IntPtr.Zero)
                         write(crashFd, info, (IntPtr)128);
-                    write(crashFd, context, (IntPtr)4096);
+                    if (context != IntPtr.Zero)
+                        write(crashFd, context, (IntPtr)4096);
                     write(crashFd, crashMarker, (IntPtr)8);
                 }
             }
@@ -293,8 +326,9 @@ sub("MelonLoader/Core.cs",
             // instruction, so Mono sees the signal exactly as it would have without us.
             try
             {
-                if (crashPreviousAction != IntPtr.Zero)
-                    sigaction(signal, crashPreviousAction, IntPtr.Zero);
+                int idx = Array.IndexOf(FatalSignals, signal);
+                if (idx >= 0 && crashPreviousActions != IntPtr.Zero)
+                    sigaction(signal, crashPreviousActions + idx * 32, IntPtr.Zero);
             }
             catch { }
         }

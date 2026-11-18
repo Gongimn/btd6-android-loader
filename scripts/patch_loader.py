@@ -57,9 +57,14 @@ sub("MelonLoader/Core.cs",
                 var hbPath = Path.Combine(MelonEnvironment.GameRootDirectory, "hb.txt");
                 new Thread(() =>
                 {
+                    var beat = 0;
                     while (true)
                     {
                         try { File.AppendAllText(hbPath, "x"); } catch { }
+                        // The runtime and Unity install their own SIGSEGV action after
+                        // us, which is why the later crashes left no register dump.
+                        if (beat++ % 4 == 0)
+                            EnsureFatalSignalHandler();
                         Thread.Sleep(500);
                     }
                 }) { IsBackground = true }.Start();
@@ -181,6 +186,9 @@ sub("MelonLoader/Core.cs",
             {
                 ourFatalHandler = OnFatalSignal;
                 IntPtr nativeHandler = Marshal.GetFunctionPointerForDelegate(ourFatalHandler);
+                ourHandlerPointer = nativeHandler;
+                if (crashVerifyBlock == IntPtr.Zero)
+                    crashVerifyBlock = AllocateZeroedBlock();
                 crashMarker = Marshal.AllocHGlobal(8);
                 Marshal.Copy(new byte[] { 0x2d, 0x73, 0x69, 0x67, 0x2d, 0x0a, 0x2d, 0x0a }, 0, crashMarker, 8);
 
@@ -234,6 +242,34 @@ sub("MelonLoader/Core.cs",
             return block;
         }
 
+        private static IntPtr ourHandlerPointer;
+        private static IntPtr crashVerifyBlock;
+        private static int handlerRearms;
+
+        // Whoever owns SIGSEGV at crash time is the one that sees the registers, and by
+        // the time the game is up that is never us unless we take the signal back.
+        private static void EnsureFatalSignalHandler()
+        {
+            try
+            {
+                if (ourHandlerPointer == IntPtr.Zero || crashHandlerBlock == IntPtr.Zero
+                    || crashVerifyBlock == IntPtr.Zero)
+                    return;
+                for (int i = 0; i < 256; i++)
+                    Marshal.WriteByte(crashVerifyBlock, i, 0);
+                if (sigaction(11, IntPtr.Zero, crashVerifyBlock) != 0)
+                    return;
+                var owner = Marshal.ReadIntPtr(crashVerifyBlock, 8);
+                if (owner == ourHandlerPointer)
+                    return;
+                sigaction(11, crashHandlerBlock, IntPtr.Zero);
+                if (handlerRearms < 4)
+                    Console.WriteLine($"[trace] SIGSEGV handler re-armed over 0x{owner.ToInt64():X}");
+                handlerRearms++;
+            }
+            catch { }
+        }
+
         private static void OnFatalSignal(int signal, IntPtr info, IntPtr context)
         {
             try
@@ -241,13 +277,13 @@ sub("MelonLoader/Core.cs",
                 // Dump the first few faults whole: the ucontext header size differs
                 // between libcs, so the register offsets are worked out from the data
                 // instead of being assumed.
-                if (crashFd >= 0 && crashDumpsWritten < 3 && context != IntPtr.Zero)
+                if (crashFd >= 0 && crashDumpsWritten < 6 && context != IntPtr.Zero)
                 {
                     crashDumpsWritten++;
                     write(crashFd, crashMarker, (IntPtr)8);
                     if (info != IntPtr.Zero)
                         write(crashFd, info, (IntPtr)128);
-                    write(crashFd, context, (IntPtr)1024);
+                    write(crashFd, context, (IntPtr)4096);
                     write(crashFd, crashMarker, (IntPtr)8);
                 }
             }
